@@ -7,11 +7,11 @@ public class PriceRefreshService : BackgroundService
     private static readonly TimeOnly[] DailyTimes =
         { new(0, 5), new(13, 15) };
 
-    private readonly TibberClient _tibber;
+    private readonly ITibberClient _tibber;
     private readonly SystemState _state;
     private readonly ILogger<PriceRefreshService> _log;
 
-    public PriceRefreshService(TibberClient tibber, SystemState state, ILogger<PriceRefreshService> log)
+    public PriceRefreshService(ITibberClient tibber, SystemState state, ILogger<PriceRefreshService> log)
     {
         _tibber = tibber;
         _state = state;
@@ -38,10 +38,10 @@ public class ForecastRefreshService : BackgroundService
 {
     private static readonly TimeSpan Interval = TimeSpan.FromHours(2);
 
-    private readonly SolarForecastService _solar;
+    private readonly ISolarForecastService _solar;
     private readonly SystemState _state;
 
-    public ForecastRefreshService(SolarForecastService solar, SystemState state)
+    public ForecastRefreshService(ISolarForecastService solar, SystemState state)
     {
         _solar = solar;
         _state = state;

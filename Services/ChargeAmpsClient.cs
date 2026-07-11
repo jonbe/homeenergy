@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using HomeEnergy.Configuration;
 using HomeEnergy.Models;
 using Microsoft.Extensions.Options;
 
@@ -12,17 +13,19 @@ namespace HomeEnergy.Services;
 /// Cookie-based auth (`ca_session`); every request MUST send the Origin header
 /// or the edge returns 403 "Invalid origin".
 /// </summary>
-public class ChargeAmpsClient
+public class ChargeAmpsClient : IChargeAmpsClient
 {
     private readonly ChargeAmpsOptions _opt;
+    private readonly ISecretProvider _secrets;
     private readonly ILogger<ChargeAmpsClient> _log;
     private readonly HttpClient _http;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private bool _loggedIn;
 
-    public ChargeAmpsClient(IOptions<AppOptions> opt, ILogger<ChargeAmpsClient> log)
+    public ChargeAmpsClient(IOptions<AppOptions> opt, ISecretProvider secrets, ILogger<ChargeAmpsClient> log)
     {
         _opt = opt.Value.ChargeAmps;
+        _secrets = secrets;
         _log = log;
         var handler = new HttpClientHandler
         {
@@ -65,8 +68,8 @@ public class ChargeAmpsClient
 
     private async Task<bool> LoginAsync(CancellationToken ct)
     {
-        var email = Secrets.Get("CHARGEAMPS_EMAIL");
-        var pw = Secrets.Get("CHARGEAMPS_PASSWORD");
+        var email = _secrets.Get("CHARGEAMPS_EMAIL");
+        var pw = _secrets.Get("CHARGEAMPS_PASSWORD");
         if (email is null || pw is null)
         {
             _log.LogWarning("CHARGEAMPS_EMAIL/PASSWORD not set; skipping charging poll");

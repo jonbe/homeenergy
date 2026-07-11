@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Net.Sockets;
+using HomeEnergy.Configuration;
 using HomeEnergy.Models;
 using Microsoft.Extensions.Options;
 
@@ -10,7 +11,7 @@ namespace HomeEnergy.Services;
 /// Reads holding registers (FC 0x03); writes a single register (FC 0x06).
 /// 32-bit values are big-endian word order (high word first).
 /// </summary>
-public class SolintegClient
+public class SolintegClient : ISolintegClient
 {
     private readonly InverterOptions _opt;
     private readonly ILogger<SolintegClient> _log;

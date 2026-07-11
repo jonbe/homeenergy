@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using HomeEnergy.Configuration;
 using HomeEnergy.Models;
 using Microsoft.Extensions.Options;
 
@@ -12,7 +13,7 @@ namespace HomeEnergy.Services;
 /// real generation on COMPLETE days (rolling history CSV). Today blends actual
 /// production with a bias-corrected remainder; tomorrow uses the calibrated PR.
 /// </summary>
-public class SolarForecastService
+public class SolarForecastService : ISolarForecastService
 {
     private const double PrMin = 0.60, PrMax = 1.05;
     private const double DayCompleteFrac = 0.90;

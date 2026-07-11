@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace HomeEnergy.Services;
+namespace HomeEnergy.Configuration;
 
 /// <summary>
 /// Resolves secrets from the process environment, falling back to Windows
@@ -8,9 +8,9 @@ namespace HomeEnergy.Services;
 /// A process launched from git-bash does not inherit User-scope vars, so the
 /// explicit User target is required.
 /// </summary>
-public static class Secrets
+public class EnvironmentSecretProvider : ISecretProvider
 {
-    public static string? Get(string name)
+    public string? Get(string name)
     {
         var v = Environment.GetEnvironmentVariable(name);
         if (!string.IsNullOrWhiteSpace(v)) return v.Trim();
@@ -22,8 +22,4 @@ public static class Secrets
         }
         return null;
     }
-
-    public static string Require(string name) =>
-        Get(name) ?? throw new InvalidOperationException(
-            $"Missing required secret '{name}' (set it as a process or Windows User env var).");
 }

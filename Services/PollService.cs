@@ -1,3 +1,4 @@
+using HomeEnergy.Configuration;
 using HomeEnergy.Models;
 using Microsoft.Extensions.Options;
 
@@ -17,14 +18,14 @@ public class PollService : BackgroundService
 {
     private static readonly TimeSpan Interval = TimeSpan.FromMinutes(1);
 
-    private readonly SolintegClient _inverter;
-    private readonly ChargeAmpsClient _chargeAmps;
+    private readonly ISolintegClient _inverter;
+    private readonly IChargeAmpsClient _chargeAmps;
     private readonly SystemState _state;
     private readonly AppOptions _opt;
     private readonly ILogger<PollService> _log;
     private ushort? _restoreMode;   // mode to restore when charging stops
 
-    public PollService(SolintegClient inverter, ChargeAmpsClient chargeAmps,
+    public PollService(ISolintegClient inverter, IChargeAmpsClient chargeAmps,
         SystemState state, IOptions<AppOptions> opt, ILogger<PollService> log)
     {
         _inverter = inverter;
@@ -45,7 +46,7 @@ public class PollService : BackgroundService
         while (await timer.WaitForNextTickAsync(ct));
     }
 
-    private async Task PollOnce(CancellationToken ct)
+    internal async Task PollOnce(CancellationToken ct)
     {
         var stats = await _inverter.ReadStatsAsync(ct);
         if (stats is not null) _state.Inverter = stats;

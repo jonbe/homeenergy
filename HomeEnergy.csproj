@@ -4,6 +4,12 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- The test project lives in a subfolder; keep it out of this project's globs. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);HomeEnergy.Tests\**</DefaultItemExcludes>
   </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="HomeEnergy.Tests" />
+  </ItemGroup>
 
 </Project>
