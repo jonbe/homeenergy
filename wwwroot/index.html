@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Home Energy</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; margin: 0; background:#111; color:#eee; }
+  header { padding:1rem 1.5rem; background:#1b1b1b; display:flex; justify-content:space-between; align-items:center; }
+  h1 { font-size:1.2rem; margin:0; font-weight:600; }
+  .updated { color:#888; font-size:.8rem; }
+  main { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:1rem; padding:1.5rem; }
+  .card { background:#1b1b1b; border:1px solid #2a2a2a; border-radius:10px; padding:1rem 1.25rem; }
+  .card h2 { font-size:.8rem; text-transform:uppercase; letter-spacing:.05em; color:#8ab4f8; margin:0 0 .75rem; }
+  .row { display:flex; justify-content:space-between; padding:.2rem 0; font-variant-numeric:tabular-nums; }
+  .row span:first-child { color:#aaa; }
+  .big { font-size:1.6rem; font-weight:600; }
+  .mode { display:inline-block; padding:.2rem .6rem; border-radius:6px; background:#264; font-weight:600; }
+  .charging { color:#7ee787; font-weight:600; }
+  .idle { color:#888; }
+  .bars { display:flex; align-items:flex-end; gap:2px; height:80px; margin-top:.5rem; }
+  .bar { flex:1; background:#2f5; opacity:.7; border-radius:2px 2px 0 0; min-height:1px; }
+  .bar.now { background:#8ab4f8; opacity:1; }
+  .bar.vexp { background:#f55; } .bar.exp { background:#f95; }
+  .bar.cheap, .bar.vcheap { background:#5f5; }
+  .muted { color:#777; font-size:.85rem; }
+  button { background:#264; color:#eee; border:1px solid #386; border-radius:6px; padding:.35rem .7rem; cursor:pointer; font-size:.85rem; }
+  button:hover { background:#386; }
+  .actions { margin-top:.6rem; display:flex; gap:.4rem; flex-wrap:wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Home Energy</h1>
+  <span class="updated" id="updated">connecting…</span>
+</header>
+<main id="cards"></main>
+
+<script>
+const kw = w => (w/1000).toFixed(2) + ' kW';
+const f = (n,d=1) => n==null ? '–' : Number(n).toFixed(d);
+const time = iso => iso ? new Date(iso).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '–';
+
+function priceBars(rows, currentStart) {
+  if (!rows || !rows.length) return '<div class="muted">not available yet</div>';
+  const max = Math.max(...rows.map(r=>r.total));
+  const cls = l => ({VERY_CHEAP:'vcheap',CHEAP:'cheap',NORMAL:'',EXPENSIVE:'exp',VERY_EXPENSIVE:'vexp'})[l]||'';
+  return '<div class="bars">' + rows.map(r=>{
+    const h = Math.max(2, r.total/max*80);
+    const now = r.startsAt===currentStart ? ' now' : '';
+    return `<div class="bar ${cls(r.level)}${now}" style="height:${h}px" title="${time(r.startsAt)} ${f(r.total,2)}"></div>`;
+  }).join('') + '</div>';
+}
+
+function solarHourly(rows) {
+  if (!rows || !rows.length) return '';
+  const max = Math.max(...rows.map(r=>r.estKw));
+  return '<div class="bars">' + rows.map(r=>{
+    const h = Math.max(2, r.estKw/max*80);
+    return `<div class="bar" style="height:${h}px" title="${String(r.hour).padStart(2,'0')}:00 ${f(r.estKw)} kW"></div>`;
+  }).join('') + '</div>';
+}
+
+async function setMode(v){ await fetch('/api/mode/'+v,{method:'POST'}); load(); }
+
+async function load() {
+  let d;
+  try { d = await (await fetch('/api/status')).json(); }
+  catch { document.getElementById('updated').textContent = 'offline'; return; }
+
+  const inv = d.inverter, pr = d.prices, ch = d.charging, so = d.solar;
+  document.getElementById('updated').textContent = 'updated ' + time(d.serverTime);
+
+  const cards = [];
+
+  // Inverter / mode
+  if (inv) {
+    cards.push(`<div class="card"><h2>Inverter</h2>
+      <div class="row"><span>Mode</span><span class="mode">${inv.modeLabel}</span></div>
+      <div class="row"><span>Solar now</span><span>${kw(inv.pvPowerW)}</span></div>
+      <div class="row"><span>Battery</span><span>${f(inv.batterySoc)}% · ${kw(inv.batteryPowerW)}</span></div>
+      <div class="row"><span>Grid</span><span>${kw(inv.gridPowerW)}</span></div>
+      <div class="row"><span>Generated today</span><span>${f(inv.genTodayKwh)} kWh</span></div>
+      <div class="actions">
+        <button onclick="setMode('0x0400')">PV-Charging</button>
+        <button onclick="setMode('0x0101')">General</button>
+        <button onclick="setMode('0x0105')">Feed-In</button>
+      </div></div>`);
+  } else cards.push('<div class="card"><h2>Inverter</h2><div class="muted">unreachable</div></div>');
+
+  // Charging
+  if (ch) {
+    const conns = ch.connectors.map(c=>`<div class="row"><span>${c.name} (${c.ocppStatus})</span>
+      <span class="${c.isCharging?'charging':'idle'}">${c.isCharging?f(c.powerKw)+' kW':'idle'}</span></div>`).join('');
+    cards.push(`<div class="card"><h2>Car charging — ${ch.chargePoint}</h2>
+      <div class="big ${ch.anyCharging?'charging':'idle'}">${ch.anyCharging?'CHARGING':'idle'}</div>
+      ${conns}</div>`);
+  } else cards.push('<div class="card"><h2>Car charging</h2><div class="muted">unavailable</div></div>');
+
+  // Prices
+  if (pr) {
+    cards.push(`<div class="card"><h2>Tibber price (${pr.currency}/kWh)</h2>
+      <div class="big">${pr.current?f(pr.current.total,2):'–'} <span class="muted">${pr.current?pr.current.level:''}</span></div>
+      <div class="muted">today</div>${priceBars(pr.today, pr.current?.startsAt)}
+      <div class="muted">tomorrow</div>${priceBars(pr.tomorrow, null)}</div>`);
+  } else cards.push('<div class="card"><h2>Tibber price</h2><div class="muted">no token / unavailable</div></div>');
+
+  // Solar forecast
+  if (so) {
+    const bias = so.todayBiasPct==null ? '' : ` <span class="muted">(${so.todayBiasPct>=0?'+':''}${f(so.todayBiasPct,0)}% vs forecast)</span>`;
+    cards.push(`<div class="card"><h2>Solar forecast</h2>
+      <div class="row"><span>Today</span><span>${f(so.todayKwh)} kWh${bias}</span></div>
+      <div class="row"><span>Tomorrow</span><span>${f(so.tomorrowKwh)} kWh</span></div>
+      <div class="row"><span>Perf. ratio</span><span>${f(so.performanceRatio,3)} (${so.calibrationDays}d)</span></div>
+      ${solarHourly(so.todayHourly)}</div>`);
+  } else cards.push('<div class="card"><h2>Solar forecast</h2><div class="muted">loading…</div></div>');
+
+  // Automation log
+  if (d.lastAction)
+    cards.push(`<div class="card"><h2>Automation</h2><div>${d.lastAction}</div>
+      <div class="muted">${time(d.lastActionAt)}</div></div>`);
+
+  document.getElementById('cards').innerHTML = cards.join('');
+}
+
+load();
+setInterval(load, 15000);
+</script>
+</body>
+</html>
