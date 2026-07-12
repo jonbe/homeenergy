@@ -16,18 +16,67 @@
   .row { display:flex; justify-content:space-between; padding:.2rem 0; font-variant-numeric:tabular-nums; }
   .row span:first-child { color:#aaa; }
   .big { font-size:1.6rem; font-weight:600; }
-  .mode { display:inline-block; padding:.2rem .6rem; border-radius:6px; background:#264; font-weight:600; }
+  .mode { display:inline-block; padding:.2rem .6rem; border-radius:6px; font-weight:600; }
+  .m-charge { background:#183; color:#bfffbf; }
+  .m-general { background:#345; color:#cdd6f4; }
+  .m-feedin { background:#a60; color:#ffe9d6; }
+  .m-backup { background:#722; color:#ffd6d6; }
+  button.m-charge { background:#183; border-color:#2f5; }
+  button.m-general { background:#345; border-color:#8ab4f8; }
+  button.m-feedin { background:#a60; border-color:#f95; }
   .charging { color:#7ee787; font-weight:600; }
   .idle { color:#888; }
-  .bars { display:flex; align-items:flex-end; gap:2px; height:80px; margin-top:.5rem; }
+  .bars { display:flex; align-items:flex-end; gap:1px; height:80px; margin-top:.5rem; }
   .bar { flex:1; background:#2f5; opacity:.7; border-radius:2px 2px 0 0; min-height:1px; }
   .bar.now { background:#8ab4f8; opacity:1; }
   .bar.vexp { background:#f55; } .bar.exp { background:#f95; }
   .bar.cheap, .bar.vcheap { background:#5f5; }
+  .axis { display:flex; gap:1px; margin-top:2px; margin-bottom:.4rem; }
+  .tick { flex:1; font-size:.6rem; line-height:1; color:#666; font-variant-numeric:tabular-nums; }
+  .rowlabel { display:flex; justify-content:space-between; color:#777; font-size:.75rem; margin-top:.5rem; }
   .muted { color:#777; font-size:.85rem; }
+  .plan { display:flex; gap:1px; height:22px; margin-top:.4rem; }
+  .slot { flex:1; border-radius:2px; background:#2a2a2a; }
+  .slot.charge { background:#2f5; }
+  .slot.feedin { background:#f95; }
+  .slot.idle, .slot.general { background:#345; }
+  .slot.backup { background:#e33; }
+  .slot.now { outline:2px solid #8ab4f8; outline-offset:-1px; }
+  .legend { display:flex; gap:1rem; font-size:.7rem; color:#aaa; margin:.5rem 0 .1rem; }
+  .legend span::before { content:''; display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:.35rem; vertical-align:-1px; }
+  .legend .c-charge::before { background:#2f5; }
+  .legend .c-feedin::before { background:#f95; }
+  .legend .c-general::before { background:#345; }
+  .legend .c-backup::before { background:#e33; }
+  .legend .c-pv::before { background:#ffd23f; }
+  .legend .c-load::before { background:#ff5c8a; }
+  .legend .c-grid::before { background:#b197fc; }
+  .legend .c-sell::before { background:#ff922b; }
+  .legend .c-batt::before { background:#4dabf7; }
+  .legend .c-price::before { background:#69db7c; }
+  .chartwrap { position:relative; padding:0 22px 16px 30px; margin-top:.5rem; }
+  .chart { display:block; width:100%; height:150px; }
+  .ylabels { position:absolute; top:0; height:150px; display:flex; flex-direction:column; justify-content:space-between; font-size:.6rem; color:#777; }
+  .ylabels.left { left:0; width:28px; text-align:right; }
+  .ylabels.right { right:0; width:20px; text-align:left; }
+  .xlabels { position:absolute; left:30px; right:22px; bottom:0; }
+  .xlabels .axis { margin:0; }
+  .chart .band { opacity:.14; }
+  .chart .band.charge { fill:#2f5; } .chart .band.feedin { fill:#f95; }
+  .chart .band.general { fill:#345; } .chart .band.backup { fill:#e33; }
+  .chart .gl { stroke:#333; stroke-width:1; vector-effect:non-scaling-stroke; }
+  .chart .nowline { stroke:#8ab4f8; stroke-width:1; stroke-dasharray:3 2; vector-effect:non-scaling-stroke; }
+  .chart .ser { fill:none; stroke-width:1.6; vector-effect:non-scaling-stroke; }
+  .chart .s-pv { stroke:#ffd23f; } .chart .s-load { stroke:#ff5c8a; }
+  .chart .s-grid { stroke:#b197fc; } .chart .s-sell { stroke:#ff922b; } .chart .s-batt { stroke:#4dabf7; }
+  .chart .s-price { stroke:#69db7c; }
   button { background:#264; color:#eee; border:1px solid #386; border-radius:6px; padding:.35rem .7rem; cursor:pointer; font-size:.85rem; }
   button:hover { background:#386; }
   .actions { margin-top:.6rem; display:flex; gap:.4rem; flex-wrap:wrap; }
+  h2 .icon { float:right; background:none; border:none; color:#8ac; font-size:1.05rem; line-height:1; padding:0 .1rem; }
+  h2 .icon:hover { background:none; color:#cde; }
+  h2 .icon.spin { animation:spin .8s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
 </style>
 </head>
 <body>
@@ -39,37 +88,136 @@
 
 <script>
 const kw = w => (w/1000).toFixed(2) + ' kW';
+// Battery flow with direction; small trickle counts as idle.
+const batFlow = w => w > 20 ? 'charging ' + kw(w) : w < -20 ? 'discharging ' + kw(-w) : 'idle';
 const f = (n,d=1) => n==null ? '–' : Number(n).toFixed(d);
 const time = iso => iso ? new Date(iso).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '–';
 
-function priceBars(rows, currentStart) {
+function priceBars(rows, currentStart, max) {
   if (!rows || !rows.length) return '<div class="muted">not available yet</div>';
-  const max = Math.max(...rows.map(r=>r.total));
+  const m = max || Math.max(...rows.map(r=>r.total));
   const cls = l => ({VERY_CHEAP:'vcheap',CHEAP:'cheap',NORMAL:'',EXPENSIVE:'exp',VERY_EXPENSIVE:'vexp'})[l]||'';
   return '<div class="bars">' + rows.map(r=>{
-    const h = Math.max(2, r.total/max*80);
+    const h = Math.max(1, r.total/m*80);
     const now = r.startsAt===currentStart ? ' now' : '';
     return `<div class="bar ${cls(r.level)}${now}" style="height:${h}px" title="${time(r.startsAt)} ${f(r.total,2)}"></div>`;
   }).join('') + '</div>';
 }
 
-function solarHourly(rows) {
-  if (!rows || !rows.length) return '';
-  const max = Math.max(...rows.map(r=>r.estKw));
+// Hour ticks 00..23 (labelled every `step` hours) sharing the chart's width.
+function hourAxis(step=3) {
+  let s = '';
+  for (let h=0; h<24; h++) s += `<div class="tick">${h%step===0?String(h).padStart(2,'0'):''}</div>`;
+  return `<div class="axis">${s}</div>`;
+}
+
+// Label row: caption on the left, min–max range on the right.
+function rowLabel(caption, lo, hi, unit) {
+  const range = (lo==null||hi==null) ? '' : `${lo}–${hi} ${unit}`;
+  return `<div class="rowlabel"><span>${caption}</span><span>${range}</span></div>`;
+}
+
+function solarHourly(rows, max, nowHour) {
+  if (!rows || !rows.length) return '<div class="muted">not available yet</div>';
+  const m = max || Math.max(...rows.map(r=>r.estKw));
+  if (!(m > 0)) return '<div class="muted">no production</div>';
   return '<div class="bars">' + rows.map(r=>{
-    const h = Math.max(2, r.estKw/max*80);
-    return `<div class="bar" style="height:${h}px" title="${String(r.hour).padStart(2,'0')}:00 ${f(r.estKw)} kW"></div>`;
+    const h = r.estKw/m*80;
+    const now = r.hour===nowHour ? ' now' : '';
+    return `<div class="bar${now}" style="height:${h}px" title="${String(r.hour).padStart(2,'0')}:00 ${f(r.estKw)} kW"></div>`;
   }).join('') + '</div>';
 }
 
+// Map an inverter mode label to the graph's colour classes.
+const modeClass = label => /charg/i.test(label) ? 'm-charge'
+  : /feed/i.test(label) ? 'm-feedin'
+  : /backup|ups/i.test(label) ? 'm-backup' : 'm-general';
+
+// Map an inverter mode label to a history-strip slot colour class.
+const modeSlot = label => /charg/i.test(label) ? 'charge'
+  : /feed/i.test(label) ? 'feedin'
+  : /backup|ups/i.test(label) ? 'backup' : 'general';
+
+// History strip: actual mode we were in for each hour 0..23 (null = no data).
+function historyStrip(rows, nowHour) {
+  if (!rows || !rows.length || !rows.some(r=>r.mode)) return '<div class="muted">no data yet today</div>';
+  return '<div class="plan">' + rows.map(r=>{
+    const now = r.hour===nowHour ? ' now' : '';
+    if (!r.mode) return `<div class="slot${now}" title="${String(r.hour).padStart(2,'0')}:00 no data"></div>`;
+    const price = r.price==null ? '' : ' · '+f(r.price,2);
+    const t = `${String(r.hour).padStart(2,'0')}:00 ${r.mode} · ${f(r.solarW/1000)} kW · ${f(r.batteryPct)}%${price}`;
+    return `<div class="slot ${modeSlot(r.mode)}${now}" title="${t}"></div>`;
+  }).join('') + '</div>';
+}
+
+// Suggested-plan strip: one cell per hour 0..23, coloured by action.
+function planStrip(rows, nowHour) {
+  if (!rows || !rows.length) return '<div class="muted">not available yet</div>';
+  const label = a => ({charge:'charge battery',feedin:'feed in (export)',idle:'general mode'})[a]||a;
+  return '<div class="plan">' + rows.map(r=>{
+    const now = r.hour===nowHour ? ' now' : '';
+    const price = r.priceHourly==null ? '' : ' · '+f(r.priceHourly,2);
+    return `<div class="slot ${r.action}${now}" title="${String(r.hour).padStart(2,'0')}:00 ${label(r.action)} · ${f(r.estKw)} kW${price}"></div>`;
+  }).join('') + '</div>';
+}
+
+// Line chart of today's logged samples. Shared left axis 0–15000: PV/load/grid
+// in W (×1), battery % as ×100 (100% = 10000), price ×5000 (right axis 0–3 SEK).
+// Grid splits into buy (import, +gridW) and sell (export, −gridW); each clamps to
+// 0 so the inactive direction sits on the axis. Battery discharge / negative
+// prices also clamp to 0.
+function historyChart(rows, nowHour) {
+  if (!rows || !rows.length || !rows.some(r=>r.mode)) return '';
+  const W = 240, H = 100, MAX = 15000, cw = W/24;
+  const x = h => (h + 0.5) * cw;
+  const y = v => (1 - Math.min(Math.max(v, 0), MAX) / MAX) * H;
+  const bands = rows.filter(r=>r.mode).map(r=>
+    `<rect class="band ${modeSlot(r.mode)}" x="${(r.hour*cw).toFixed(1)}" y="0" width="${cw.toFixed(1)}" height="${H}"/>`).join('');
+  const grid = [5000,10000].map(v=>`<line class="gl" x1="0" y1="${y(v).toFixed(1)}" x2="${W}" y2="${y(v).toFixed(1)}"/>`).join('');
+  const now = nowHour>=0 ? `<line class="nowline" x1="${x(nowHour).toFixed(1)}" y1="0" x2="${x(nowHour).toFixed(1)}" y2="${H}"/>` : '';
+  const path = acc => {
+    let d = '', pen = false;
+    for (const r of rows) {
+      const v = acc(r);
+      if (v == null || isNaN(v)) { pen = false; continue; }
+      d += (pen ? ' L' : ' M') + x(r.hour).toFixed(1) + ' ' + y(v).toFixed(1);
+      pen = true;
+    }
+    return d;
+  };
+  const ser = (cls, acc) => `<path class="ser ${cls}" d="${path(acc)}"/>`;
+  const svg = `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    ${bands}${grid}${now}
+    ${ser('s-grid', r=>r.gridW==null?null:Math.max(r.gridW,0))}
+    ${ser('s-sell', r=>r.gridW==null?null:Math.max(-r.gridW,0))}
+    ${ser('s-pv', r=>r.solarW)}
+    ${ser('s-load', r=>r.loadW)}
+    ${ser('s-batt', r=>r.batteryPct==null?null:r.batteryPct*100)}
+    ${ser('s-price', r=>r.price==null?null:r.price*5000)}
+  </svg>`;
+  const left = ['15k','10k','5k','0'].map(t=>`<span>${t}</span>`).join('');
+  const right = ['3.0','2.0','1.0','0'].map(t=>`<span>${t}</span>`).join('');
+  return `<div class="chartwrap">
+    <div class="ylabels left">${left}</div>
+    <div class="ylabels right">${right}</div>
+    ${svg}
+    <div class="xlabels">${hourAxis()}</div>
+  </div>`;
+}
+
 async function setMode(v){ await fetch('/api/mode/'+v,{method:'POST'}); load(); }
+async function refreshVehicles(btn){
+  if (btn) btn.classList.add('spin');
+  try { await fetch('/api/vehicles/refresh'); } catch {}
+  await load();
+}
 
 async function load() {
   let d;
   try { d = await (await fetch('/api/status')).json(); }
   catch { document.getElementById('updated').textContent = 'offline'; return; }
 
-  const inv = d.inverter, pr = d.prices, ch = d.charging, so = d.solar;
+  const inv = d.inverter, pr = d.prices, ch = d.charging, so = d.solar, pl = d.plan, ve = d.vehicles, cg = d.chargers;
   document.getElementById('updated').textContent = 'updated ' + time(d.serverTime);
 
   const cards = [];
@@ -77,49 +225,117 @@ async function load() {
   // Inverter / mode
   if (inv) {
     cards.push(`<div class="card"><h2>Inverter</h2>
-      <div class="row"><span>Mode</span><span class="mode">${inv.modeLabel}</span></div>
+      <div class="row"><span>Mode</span><span class="mode ${modeClass(inv.modeLabel)}">${inv.modeLabel}</span></div>
       <div class="row"><span>Solar now</span><span>${kw(inv.pvPowerW)}</span></div>
-      <div class="row"><span>Battery</span><span>${f(inv.batterySoc)}% · ${kw(inv.batteryPowerW)}</span></div>
+      <div class="row"><span>Battery</span><span>${f(inv.batterySoc)}% · ${batFlow(inv.batteryPowerW)}</span></div>
       <div class="row"><span>Grid</span><span>${kw(inv.gridPowerW)}</span></div>
+      <div class="row"><span>House load</span><span>${kw(inv.loadPowerW)}</span></div>
       <div class="row"><span>Generated today</span><span>${f(inv.genTodayKwh)} kWh</span></div>
       <div class="actions">
-        <button onclick="setMode('0x0400')">PV-Charging</button>
-        <button onclick="setMode('0x0101')">General</button>
-        <button onclick="setMode('0x0105')">Feed-In</button>
+        <button class="m-charge" onclick="setMode('0x0400')">PV-Charging</button>
+        <button class="m-general" onclick="setMode('0x0101')">General</button>
+        <button class="m-feedin" onclick="setMode('0x0105')">Feed-In</button>
       </div></div>`);
   } else cards.push('<div class="card"><h2>Inverter</h2><div class="muted">unreachable</div></div>');
 
+  // Car battery state of charge (from Tibber's connected-car data).
+  const vehicleRows = (ve?.vehicles?.length ? ve.vehicles : []).map(v=>{
+    const name = v.name || v.shortName || 'Car';
+    const seen = v.lastSeen ? 'seen ' + time(v.lastSeen) : '';
+    if (v.batteryPercent==null) return `<div class="row"><span>${name}</span><span class="muted">no data</span></div>`;
+    const stale = v.isAlive===false ? ' muted' : '';
+    const chg = v.isCharging ? ' <span class="charging">charging</span>' : '';
+    return `<div class="row"><span>${name}</span><span class="${stale}" title="${seen}">${f(v.batteryPercent)}%${chg}</span></div>`;
+  }).join('');
+
   // Charging
+  const refBtn = '<button class="icon" title="Refresh car data" onclick="refreshVehicles(this)">&#x21bb;</button>';
   if (ch) {
     const conns = ch.connectors.map(c=>`<div class="row"><span>${c.name} (${c.ocppStatus})</span>
       <span class="${c.isCharging?'charging':'idle'}">${c.isCharging?f(c.powerKw)+' kW':'idle'}</span></div>`).join('');
-    cards.push(`<div class="card"><h2>Car charging — ${ch.chargePoint}</h2>
+    cards.push(`<div class="card"><h2>Car charging — ${ch.chargePoint}${refBtn}</h2>
       <div class="big ${ch.anyCharging?'charging':'idle'}">${ch.anyCharging?'CHARGING':'idle'}</div>
-      ${conns}</div>`);
-  } else cards.push('<div class="card"><h2>Car charging</h2><div class="muted">unavailable</div></div>');
+      ${conns}${vehicleRows}</div>`);
+  } else if (vehicleRows) {
+    cards.push(`<div class="card"><h2>Car${refBtn}</h2>${vehicleRows}</div>`);
+  } else cards.push(`<div class="card"><h2>Car charging${refBtn}</h2><div class="muted">unavailable</div></div>`);
+
+  // Charger (Tibber Data API — read-only wallbox telemetry, per connector)
+  if (cg?.chargers?.length) {
+    const rows = cg.chargers.map(c=>{
+      const nm = c.name || c.model || 'Charger';
+      const off = c.isOnline===false ? ' muted' : '';
+      if (c.isCharging) {
+        const amp = c.currentA!=null ? ` · ${f(c.currentA,1)} A` : '';
+        const ph = c.phaseCount!=null ? ` · ${c.phaseCount}φ` : '';
+        return `<div class="row${off}"><span>${nm}</span><span class="charging">${kw(c.powerW)}${amp}${ph}</span></div>`;
+      }
+      const st = c.connectorStatus || 'idle';
+      return `<div class="row${off}"><span>${nm}</span><span class="idle">${st}</span></div>`;
+    }).join('');
+    cards.push(`<div class="card"><h2>Charger</h2>${rows}</div>`);
+  }
+
+  // Tibber Data API token status + (re)authorize link.
+  if (d.tibber) {
+    const ok = d.tibber.connected;
+    cards.push(`<div class="card"><h2>Tibber Data API</h2>
+      <div class="row"><span>Token</span><span class="${ok?'charging':'idle'}">${ok?'connected':'not connected'}</span></div>
+      <div class="actions"><button onclick="window.open('/tibber/connect','_blank')">${ok?'Re-authorize':'Connect'}</button></div></div>`);
+  }
 
   // Prices
   if (pr) {
+    const allP = [...(pr.today||[]), ...(pr.tomorrow||[])].map(r=>r.total);
+    const pmax = allP.length ? Math.max(...allP) : 0;   // shared scale across both days
+    const prng = rows => rows?.length ? [f(Math.min(...rows.map(r=>r.total)),2), f(Math.max(...rows.map(r=>r.total)),2)] : [null,null];
+    const [tlo,thi] = prng(pr.today), [mlo,mhi] = prng(pr.tomorrow);
     cards.push(`<div class="card"><h2>Tibber price (${pr.currency}/kWh)</h2>
       <div class="big">${pr.current?f(pr.current.total,2):'–'} <span class="muted">${pr.current?pr.current.level:''}</span></div>
-      <div class="muted">today</div>${priceBars(pr.today, pr.current?.startsAt)}
-      <div class="muted">tomorrow</div>${priceBars(pr.tomorrow, null)}</div>`);
+      ${rowLabel('today', tlo, thi, '')}${priceBars(pr.today, pr.current?.startsAt, pmax)}${pr.today?.length?hourAxis():''}
+      ${rowLabel('tomorrow', mlo, mhi, '')}${priceBars(pr.tomorrow, null, pmax)}${pr.tomorrow?.length?hourAxis():''}</div>`);
   } else cards.push('<div class="card"><h2>Tibber price</h2><div class="muted">no token / unavailable</div></div>');
 
   // Solar forecast
   if (so) {
     const bias = so.todayBiasPct==null ? '' : ` <span class="muted">(${so.todayBiasPct>=0?'+':''}${f(so.todayBiasPct,0)}% vs forecast)</span>`;
-    cards.push(`<div class="card"><h2>Solar forecast</h2>
+    const allPv = [...(so.todayHourly||[]), ...(so.tomorrowHourly||[])].map(r=>r.estKw);
+    const smax = allPv.length ? Math.max(...allPv) : 0;   // shared scale so today/tomorrow are comparable
+    const nowHour = new Date(d.serverTime).getHours();
+    const speak = f(smax,1);
+    cards.push(`<div class="card"><h2>Solar forecast (kW)</h2>
       <div class="row"><span>Today</span><span>${f(so.todayKwh)} kWh${bias}</span></div>
       <div class="row"><span>Tomorrow</span><span>${f(so.tomorrowKwh)} kWh</span></div>
       <div class="row"><span>Perf. ratio</span><span>${f(so.performanceRatio,3)} (${so.calibrationDays}d)</span></div>
-      ${solarHourly(so.todayHourly)}</div>`);
+      ${rowLabel('today', 0, speak, 'kW')}${solarHourly(so.todayHourly, smax, nowHour)}${so.todayHourly?.length?hourAxis():''}
+      ${rowLabel('tomorrow', 0, speak, 'kW')}${solarHourly(so.tomorrowHourly, smax)}${so.tomorrowHourly?.length?hourAxis():''}</div>`);
   } else cards.push('<div class="card"><h2>Solar forecast</h2><div class="muted">loading…</div></div>');
 
-  // Automation log
-  if (d.lastAction)
-    cards.push(`<div class="card"><h2>Automation</h2><div>${d.lastAction}</div>
-      <div class="muted">${time(d.lastActionAt)}</div></div>`);
+  // Suggested plan (charge vs feed-in across the day)
+  if (pl) {
+    const nowHour = new Date(d.serverTime).getHours();
+    const legend = `<div class="legend"><span class="c-charge">charge</span><span class="c-feedin">feed-in</span><span class="c-general">general</span><span class="c-backup">UPS</span></div>`;
+    cards.push(`<div class="card"><h2>Suggested plan</h2>
+      <div class="row"><span>Battery</span><span>${f(inv?.batterySoc)}% · need ${f(pl.todayDeficitKwh)} kWh to full (${f(pl.batteryCapacityKwh,0)} kWh)</span></div>
+      ${legend}
+      ${rowLabel('actual today', null, null, '')}${historyStrip(d.history, nowHour)}${hourAxis()}
+      ${rowLabel('planned today', null, null, '')}${planStrip(pl.today, nowHour)}${hourAxis()}
+      ${rowLabel('planned tomorrow', null, null, '')}${planStrip(pl.tomorrow, -1)}${hourAxis()}</div>`);
+  }
+
+  // Today (live) — line chart of the logged minute/hour history.
+  if (d.history?.some(r=>r.mode)) {
+    const nowHour = new Date(d.serverTime).getHours();
+    const legend = `<div class="legend"><span class="c-pv">PV</span><span class="c-load">load</span><span class="c-grid">grid buy</span><span class="c-sell">grid sell</span><span class="c-batt">battery %</span><span class="c-price">price</span></div>`;
+    cards.push(`<div class="card"><h2>Today (live)</h2>${legend}${historyChart(d.history, nowHour)}</div>`);
+  }
+
+  // Automation log — last few actions, newest first, one per line.
+  if (d.actions?.length) {
+    const rows = d.actions.map(a=>
+      `<div class="row"><span>${a.message}</span><span class="muted">${time(a.at)}</span></div>`).join('');
+    cards.push(`<div class="card"><h2>Automation</h2>${rows}</div>`);
+  }
 
   document.getElementById('cards').innerHTML = cards.join('');
 }

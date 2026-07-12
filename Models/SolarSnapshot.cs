@@ -8,4 +8,5 @@ public record SolarSnapshot(
     double? TodayBiasPct,       // + = running ahead of forecast
     double TomorrowKwh,
     IReadOnlyList<HourlyPv> TodayHourly,
+    IReadOnlyList<HourlyPv> TomorrowHourly,
     DateTimeOffset FetchedAt);

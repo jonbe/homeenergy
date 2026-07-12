@@ -10,27 +10,37 @@ builder.Services.AddSingleton<SystemState>();
 builder.Services.AddSingleton<ISecretProvider, EnvironmentSecretProvider>();
 builder.Services.AddSingleton<ISolintegClient, SolintegClient>();
 builder.Services.AddSingleton<ITibberClient, TibberClient>();
+builder.Services.AddSingleton<ITibberVehicleClient, TibberVehicleClient>();
 builder.Services.AddSingleton<IChargeAmpsClient, ChargeAmpsClient>();
 builder.Services.AddSingleton<ISolarForecastService, SolarForecastService>();
+builder.Services.AddSingleton<IPlanService, PlanService>();
+builder.Services.AddSingleton<IHistoryStore, SqliteHistoryStore>();
 
 builder.Services.AddHostedService<PollService>();
 builder.Services.AddHostedService<PriceRefreshService>();
 builder.Services.AddHostedService<ForecastRefreshService>();
+builder.Services.AddHostedService<VehicleRefreshService>();
 
 var app = builder.Build();
+
+app.Services.GetRequiredService<IHistoryStore>().Init();
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
 // Aggregate status for the dashboard.
-app.MapGet("/api/status", (SystemState s) => Results.Json(new
+app.MapGet("/api/status", (SystemState s, IPlanService planner, IHistoryStore history, ITibberVehicleClient tibber) => Results.Json(new
 {
     inverter = s.Inverter,
     prices = s.Prices,
     charging = s.Charging,
     solar = s.Solar,
-    lastAction = s.LastAction,
-    lastActionAt = s.LastActionAt,
+    vehicles = s.Vehicles,
+    chargers = s.Chargers,
+    tibber = new { connected = tibber.IsConnected },
+    plan = planner.Build(s.Prices, s.Solar, s.Inverter),
+    history = history.TodayHourly(),
+    actions = s.RecentActions(5),
     serverTime = DateTimeOffset.Now,
 }));
 
@@ -41,9 +51,45 @@ app.MapPost("/api/mode/{value}", async (string value, ISolintegClient inv, Syste
         ? Convert.ToUInt16(value, 16)
         : ushort.Parse(value);
     await inv.WriteModeAsync(mode, ct);
-    s.LastAction = $"Manual mode set to {SolintegClient.ModeLabel(mode)}";
-    s.LastActionAt = DateTimeOffset.Now;
+    s.LogAction($"Manual mode set to {SolintegClient.ModeLabel(mode)}");
     return Results.Ok(new { mode = $"0x{mode:X4}", label = SolintegClient.ModeLabel(mode) });
+});
+
+// One-time OAuth consent to the Tibber Data API (car battery SoC).
+// Open /tibber/connect in a browser; Tibber redirects back to /tibber/callback.
+app.MapGet("/tibber/connect", (ITibberVehicleClient vehicles) =>
+{
+    var url = vehicles.BuildAuthorizeUrl();
+    return url is null
+        ? Results.Problem("TIBBER_DATAAPI_CLIENT_ID not configured")
+        : Results.Redirect(url);
+});
+
+app.MapGet("/tibber/callback", async (string? code, string? state, string? error,
+    ITibberVehicleClient vehicles, CancellationToken ct) =>
+{
+    if (error is not null)
+        return Results.Content($"Tibber authorization failed: {error}", "text/plain");
+    if (code is null || state is null)
+        return Results.BadRequest("Missing code/state");
+
+    var ok = await vehicles.HandleCallbackAsync(code, state, ct);
+    return Results.Content(
+        ok ? "Tibber Data API connected. You can close this tab."
+           : "Token exchange failed; check the server log.",
+        "text/plain");
+});
+
+// Force an immediate car-data poll (the background poller runs every 10 min).
+app.MapGet("/api/vehicles/refresh", async (ITibberVehicleClient vehicles, SystemState s, CancellationToken ct) =>
+{
+    var snap = await vehicles.FetchAsync(ct);
+    if (snap is not null)
+    {
+        s.Vehicles = snap.Vehicles;
+        s.Chargers = snap.Chargers;
+    }
+    return Results.Json(snap);
 });
 
 app.Run();

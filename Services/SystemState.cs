@@ -9,8 +9,25 @@ public class SystemState
     public volatile PriceSnapshot? Prices;
     public volatile ChargingSnapshot? Charging;
     public volatile SolarSnapshot? Solar;
+    public volatile VehicleSnapshot? Vehicles;
+    public volatile ChargerSnapshot? Chargers;
 
-    // Last automation action taken by the charging poller (for the UI).
-    public volatile string? LastAction;
-    public DateTimeOffset? LastActionAt;
+    // Bounded history of automation/manual actions, newest first (for the UI).
+    private const int MaxActions = 20;
+    private readonly object _actionLock = new();
+    private readonly LinkedList<ActionEntry> _actions = new();
+
+    public void LogAction(string message)
+    {
+        lock (_actionLock)
+        {
+            _actions.AddFirst(new ActionEntry(message, DateTimeOffset.Now));
+            while (_actions.Count > MaxActions) _actions.RemoveLast();
+        }
+    }
+
+    public IReadOnlyList<ActionEntry> RecentActions(int count)
+    {
+        lock (_actionLock) return _actions.Take(count).ToList();
+    }
 }

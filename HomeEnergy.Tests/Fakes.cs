@@ -42,6 +42,25 @@ internal sealed class FakeChargeAmpsClient : IChargeAmpsClient
     public Task<ChargingSnapshot?> GetStatusAsync(CancellationToken ct) => Task.FromResult(Snapshot);
 }
 
+internal sealed class FakePlanService : IPlanService
+{
+    public PlanSnapshot? Snapshot { get; set; }
+    public PlanSnapshot? Build(PriceSnapshot? prices, SolarSnapshot? solar, InverterStats? inverter) => Snapshot;
+}
+
+internal sealed class FakeHistoryStore : IHistoryStore
+{
+    public int Logged { get; private set; }
+    public void Init() { }
+    public Task LogMinuteAsync(DateTimeOffset when, string mode, double solarW,
+        double batteryPct, double gridW, double loadW, double? price, CancellationToken ct)
+    {
+        Logged++;
+        return Task.CompletedTask;
+    }
+    public IReadOnlyList<HistoryHour> TodayHourly() => Array.Empty<HistoryHour>();
+}
+
 /// <summary>Fails if a client is ever created — proves a code path short-circuits
 /// before touching the network.</summary>
 internal sealed class ThrowingHttpClientFactory : IHttpClientFactory

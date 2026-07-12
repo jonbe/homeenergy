@@ -25,3 +25,11 @@ Thumbs.db
 # Secrets / local config (TIBBER_TOKEN and CHARGEAMPS_* live in env vars)
 appsettings.*.local.json
 *.env
+
+# Tibber Data API OAuth refresh token (persisted locally after consent)
+tibber_tokens.json
+
+# Local history database (SQLite)
+history.db
+history.db-wal
+history.db-shm

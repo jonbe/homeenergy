@@ -10,20 +10,31 @@ public class PollServiceTests
 {
     private static InverterStats Stats(int mode) => new(
         PvPowerW: 0, Pv1PowerW: 0, Pv2PowerW: 0, InverterAcW: 0, GridPowerW: 0,
-        BatteryPowerW: 0, BatterySoc: 50, GenTodayKwh: 0,
+        BatteryPowerW: 0, LoadPowerW: 0, BatterySoc: 50, GenTodayKwh: 0,
         ModeRaw: $"0x{mode:X4}", ModeLabel: SolintegClient.ModeLabel(mode),
         ReadAt: DateTimeOffset.Now);
 
     private static ChargingSnapshot Charging(bool anyCharging) => new(
         "test-cp", Array.Empty<ConnectorStatus>(), anyCharging, DateTimeOffset.Now);
 
+    // A plan whose current hour carries the given action (rest of the day idle).
+    private static PlanSnapshot PlanNow(string action)
+    {
+        int now = DateTimeOffset.Now.Hour;
+        var today = Enumerable.Range(0, 24)
+            .Select(h => new PlanHour(h, h == now ? action : "idle", 1, 0.5))
+            .ToList();
+        return new PlanSnapshot(19.2, 0, today, today, DateTimeOffset.Now);
+    }
+
     private static PollService Build(FakeSolintegClient inv, FakeChargeAmpsClient ch,
-        SystemState state, bool automation) =>
-        new(inv, ch, state, Options.Create(new AppOptions { AutomationEnabled = automation }),
+        SystemState state, bool automation, FakePlanService? plan = null) =>
+        new(inv, ch, plan ?? new FakePlanService(), new FakeHistoryStore(), state,
+            Options.Create(new AppOptions { AutomationEnabled = automation }),
             NullLogger<PollService>.Instance);
 
     [Fact]
-    public async Task PollOnce_SwitchesToPvCharging_WhenCarChargingAndAutomationOn()
+    public async Task PollOnce_SwitchesToBackup_WhenCarChargingAndAutomationOn()
     {
         var inv = new FakeSolintegClient { Stats = Stats(SolintegClient.ModeGeneral) };
         var ch = new FakeChargeAmpsClient { Snapshot = Charging(anyCharging: true) };
@@ -31,7 +42,7 @@ public class PollServiceTests
 
         await Build(inv, ch, state, automation: true).PollOnce(CancellationToken.None);
 
-        Assert.Equal(SolintegClient.ModePvCharging, inv.LastModeWritten);
+        Assert.Equal(SolintegClient.ModeBackup, inv.LastModeWritten);
         Assert.Same(ch.Snapshot, state.Charging);
         Assert.Same(inv.Stats, state.Inverter);
     }
@@ -50,21 +61,42 @@ public class PollServiceTests
     }
 
     [Fact]
-    public async Task PollOnce_RestoresPreviousMode_WhenChargingStops()
+    public async Task PollOnce_FollowsPlan_WhenNotCharging()
+    {
+        var inv = new FakeSolintegClient { Stats = Stats(SolintegClient.ModeGeneral) };
+        var ch = new FakeChargeAmpsClient { Snapshot = Charging(anyCharging: false) };
+        var plan = new FakePlanService { Snapshot = PlanNow("feedin") };
+        var state = new SystemState();
+
+        await Build(inv, ch, state, automation: true, plan).PollOnce(CancellationToken.None);
+
+        Assert.Equal(SolintegClient.ModeFeedIn, inv.LastModeWritten);
+    }
+
+    [Fact]
+    public async Task PollOnce_LeavesModeAlone_WhenPlanAlreadyMatches()
+    {
+        var inv = new FakeSolintegClient { Stats = Stats(SolintegClient.ModeFeedIn) };
+        var ch = new FakeChargeAmpsClient { Snapshot = Charging(anyCharging: false) };
+        var plan = new FakePlanService { Snapshot = PlanNow("feedin") };
+        var state = new SystemState();
+
+        await Build(inv, ch, state, automation: true, plan).PollOnce(CancellationToken.None);
+
+        Assert.Null(inv.LastModeWritten);
+        Assert.Equal(0, inv.WriteCount);
+    }
+
+    [Fact]
+    public async Task PollOnce_CarChargingOverridesPlan()
     {
         var inv = new FakeSolintegClient { Stats = Stats(SolintegClient.ModeGeneral) };
         var ch = new FakeChargeAmpsClient { Snapshot = Charging(anyCharging: true) };
+        var plan = new FakePlanService { Snapshot = PlanNow("feedin") };
         var state = new SystemState();
-        var svc = Build(inv, ch, state, automation: true);
 
-        await svc.PollOnce(CancellationToken.None);              // charging -> PV-Charging
-        Assert.Equal(SolintegClient.ModePvCharging, inv.LastModeWritten);
+        await Build(inv, ch, state, automation: true, plan).PollOnce(CancellationToken.None);
 
-        inv.Stats = Stats(SolintegClient.ModePvCharging);        // inverter now reflects PV-Charging
-        ch.Snapshot = Charging(anyCharging: false);              // charging stopped
-        await svc.PollOnce(CancellationToken.None);
-
-        Assert.Equal(SolintegClient.ModeGeneral, inv.LastModeWritten);   // restored
-        Assert.Equal(2, inv.WriteCount);
+        Assert.Equal(SolintegClient.ModeBackup, inv.LastModeWritten);
     }
 }

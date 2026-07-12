@@ -7,6 +7,7 @@ public record InverterStats(
     double InverterAcW,
     double GridPowerW,      // + import from grid, - export to grid
     double BatteryPowerW,   // + charging, - discharging
+    double LoadPowerW,      // house consumption, derived: PV + grid - battery
     double BatterySoc,      // %
     double GenTodayKwh,
     string ModeRaw,         // hex of register 50000

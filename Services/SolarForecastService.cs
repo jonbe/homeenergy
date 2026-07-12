@@ -21,12 +21,12 @@ public class SolarForecastService : ISolarForecastService
     private const int PrWindowDays = 10;
 
     private readonly SolarOptions _opt;
-    private readonly SolintegClient _inverter;
+    private readonly ISolintegClient _inverter;
     private readonly IHttpClientFactory _http;
     private readonly ILogger<SolarForecastService> _log;
     private readonly string _historyPath;
 
-    public SolarForecastService(IOptions<AppOptions> opt, SolintegClient inverter,
+    public SolarForecastService(IOptions<AppOptions> opt, ISolintegClient inverter,
         IHttpClientFactory http, IHostEnvironment env, ILogger<SolarForecastService> log)
     {
         _opt = opt.Value.Solar;
@@ -87,13 +87,13 @@ public class SolarForecastService : ISolarForecastService
 
             double tomorrowEst = _opt.Kwp * DayKwh(days.GetValueOrDefault(tomorrow, new())) * pr;
 
-            var hourly = todayHours
-                .Select(h => new HourlyPv(h.Hour, _opt.Kwp * h.Gti / 1000.0 * pr, h.Cloud))
-                .Where(h => h.EstKw > 0.05)
-                .ToList();
+            // Full-day series (00–23, night hours included as 0) so the bars
+            // share the same time axis as the price chart.
+            var todayHourly = BuildHourly(todayHours, pr);
+            var tomorrowHourly = BuildHourly(days.GetValueOrDefault(tomorrow, new()), pr);
 
             return new SolarSnapshot(pr, ndays, todayEst, actual, biasPct,
-                tomorrowEst, hourly, DateTimeOffset.Now);
+                tomorrowEst, todayHourly, tomorrowHourly, DateTimeOffset.Now);
         }
         catch (Exception ex)
         {
@@ -125,6 +125,11 @@ public class SolarForecastService : ISolarForecastService
         var now = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromSeconds(offset));
         return (days, now);
     }
+
+    private List<HourlyPv> BuildHourly(List<HourSample> hours, double pr) =>
+        hours.OrderBy(h => h.Hour)
+             .Select(h => new HourlyPv(h.Hour, _opt.Kwp * h.Gti / 1000.0 * pr, h.Cloud))
+             .ToList();
 
     private static double DayKwh(List<HourSample> hours) => hours.Sum(h => h.Gti) / 1000.0;
 

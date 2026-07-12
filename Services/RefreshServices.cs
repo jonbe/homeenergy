@@ -59,6 +59,38 @@ public class ForecastRefreshService : BackgroundService
     }
 }
 
+/// <summary>Refreshes connected-car data (battery %) from the Tibber Data API
+/// at startup and every 10 minutes. Tibber itself polls the car cloud on its
+/// own cadence, so more frequent polling gains nothing.</summary>
+public class VehicleRefreshService : BackgroundService
+{
+    private static readonly TimeSpan Interval = TimeSpan.FromMinutes(10);
+
+    private readonly ITibberVehicleClient _vehicles;
+    private readonly SystemState _state;
+
+    public VehicleRefreshService(ITibberVehicleClient vehicles, SystemState state)
+    {
+        _vehicles = vehicles;
+        _state = state;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(Interval);
+        do
+        {
+            var s = await _vehicles.FetchAsync(ct);
+            if (s is not null)
+            {
+                _state.Vehicles = s.Vehicles;
+                _state.Chargers = s.Chargers;
+            }
+        }
+        while (await timer.WaitForNextTickAsync(ct));
+    }
+}
+
 public static class DailySchedule
 {
     /// <summary>Time until the next occurrence of any of the given daily times.</summary>

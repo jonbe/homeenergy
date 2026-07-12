@@ -22,6 +22,7 @@ public class SolintegClient : ISolintegClient
     public const ushort ModePvCharging = 0x0400;
     public const ushort ModeGeneral = 0x0101;
     public const ushort ModeFeedIn = 0x0105;
+    public const ushort ModeBackup = 0x0103;   // reserves the battery (no discharge to loads)
 
     private static readonly Dictionary<int, string> ModeLabels = new()
     {
@@ -53,13 +54,18 @@ public class SolintegClient : ISolintegClient
             double pv1 = await ReadU32(stream, 11062, ct);
             double pv2 = await ReadU32(stream, 11064, ct);
             double ac = await ReadS32(stream, 11016, ct);
-            double grid = await ReadS32(stream, 11000, ct);
-            double batt = await ReadS32(stream, 30258, ct);
+            // Register 11000 reports + when exporting; negate so the field
+            // follows the app convention (+ import, - export / feed-in).
+            double grid = -await ReadS32(stream, 11000, ct);
+            // Register 30258 reports + when discharging; negate so the field
+            // follows the app convention (+ charging, - discharging).
+            double batt = -await ReadS32(stream, 30258, ct);
             double soc = await ReadU16(stream, 33000, ct) * 0.01;
             double gen = await ReadU16(stream, 31005, ct) * 0.1;
             int mode = await ReadU16(stream, ModeRegister, ct);
+            double load = pv + grid - batt;   // house consumption (energy balance)
 
-            return new InverterStats(pv, pv1, pv2, ac, grid, batt, soc, gen,
+            return new InverterStats(pv, pv1, pv2, ac, grid, batt, load, soc, gen,
                 $"0x{mode:X4}",
                 ModeLabels.GetValueOrDefault(mode, $"Unknown(0x{mode:X4})"),
                 DateTimeOffset.Now);

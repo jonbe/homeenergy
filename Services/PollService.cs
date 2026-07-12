@@ -6,9 +6,9 @@ namespace HomeEnergy.Services;
 
 /// <summary>
 /// Every 60 s: read inverter stats + charging status. When automation is
-/// enabled and a car is charging, switch the inverter to PV-Charging so the
-/// house battery is not drained into the car; the previous mode is restored
-/// when charging stops.
+/// enabled it drives the inverter mode: a charging car forces Backup/UPS (which
+/// reserves the battery so it is not drained into the car); otherwise it follows
+/// the suggested plan for the current hour (charge / feed-in / general).
 ///
 /// NOTE: writing the mode register conflicts with the Solinteg app/cloud
 /// schema. Automation is OFF by default (AutomationEnabled) — enable only if
@@ -20,16 +20,20 @@ public class PollService : BackgroundService
 
     private readonly ISolintegClient _inverter;
     private readonly IChargeAmpsClient _chargeAmps;
+    private readonly IPlanService _plan;
+    private readonly IHistoryStore _history;
     private readonly SystemState _state;
     private readonly AppOptions _opt;
     private readonly ILogger<PollService> _log;
-    private ushort? _restoreMode;   // mode to restore when charging stops
 
     public PollService(ISolintegClient inverter, IChargeAmpsClient chargeAmps,
-        SystemState state, IOptions<AppOptions> opt, ILogger<PollService> log)
+        IPlanService plan, IHistoryStore history, SystemState state, IOptions<AppOptions> opt,
+        ILogger<PollService> log)
     {
         _inverter = inverter;
         _chargeAmps = chargeAmps;
+        _plan = plan;
+        _history = history;
         _state = state;
         _opt = opt.Value;
         _log = log;
@@ -56,31 +60,58 @@ public class PollService : BackgroundService
 
         if (_opt.AutomationEnabled && charging is not null && stats is not null)
             await ApplyAutomation(charging, stats, ct);
+
+        if (stats is not null)
+            await LogHistory(stats, ct);
+    }
+
+    private async Task LogHistory(InverterStats stats, CancellationToken ct)
+    {
+        try
+        {
+            await _history.LogMinuteAsync(DateTimeOffset.Now, stats.ModeLabel,
+                stats.PvPowerW, stats.BatterySoc, stats.GridPowerW, stats.LoadPowerW,
+                _state.Prices?.Current?.Total, ct);
+        }
+        catch (Exception ex) { _log.LogWarning(ex, "history log failed"); }
     }
 
     private async Task ApplyAutomation(ChargingSnapshot charging, InverterStats stats, CancellationToken ct)
     {
-        int currentMode = Convert.ToInt32(stats.ModeRaw, 16);
+        var (desired, reason) = DesiredMode(charging, stats);
+        if (desired is not ushort want) return;
 
-        if (charging.AnyCharging && currentMode != SolintegClient.ModePvCharging)
-        {
-            _restoreMode = (ushort)currentMode;
-            await _inverter.WriteModeAsync(SolintegClient.ModePvCharging, ct);
-            SetAction($"Car charging -> set PV-Charging (was {SolintegClient.ModeLabel(currentMode)})");
-        }
-        else if (!charging.AnyCharging && _restoreMode is ushort prev
-                 && currentMode == SolintegClient.ModePvCharging)
-        {
-            await _inverter.WriteModeAsync(prev, ct);
-            SetAction($"Charging stopped -> restored {SolintegClient.ModeLabel(prev)}");
-            _restoreMode = null;
-        }
+        int currentMode = Convert.ToInt32(stats.ModeRaw, 16);
+        if (currentMode == want) return;
+
+        await _inverter.WriteModeAsync(want, ct);
+        SetAction($"{reason} -> {SolintegClient.ModeLabel(want)} (was {SolintegClient.ModeLabel(currentMode)})");
     }
+
+    // A charging car forces Backup/UPS (reserves the battery); otherwise follow
+    // the plan's current hour. Returns (null, _) when there is no plan yet,
+    // meaning "leave the mode alone".
+    private (ushort? mode, string reason) DesiredMode(ChargingSnapshot charging, InverterStats stats)
+    {
+        if (charging.AnyCharging)
+            return (SolintegClient.ModeBackup, "Car charging");
+
+        var plan = _plan.Build(_state.Prices, _state.Solar, stats);
+        var slot = plan?.Today.FirstOrDefault(h => h.Hour == DateTimeOffset.Now.Hour);
+        return slot is null ? (null, "") : (ModeForAction(slot.Action), $"Plan ({slot.Action})");
+    }
+
+    private static ushort? ModeForAction(string action) => action switch
+    {
+        "charge" => SolintegClient.ModePvCharging,
+        "feedin" => SolintegClient.ModeFeedIn,
+        "idle" => SolintegClient.ModeGeneral,
+        _ => null,
+    };
 
     private void SetAction(string msg)
     {
         _log.LogInformation("Automation: {Msg}", msg);
-        _state.LastAction = msg;
-        _state.LastActionAt = DateTimeOffset.Now;
+        _state.LogAction(msg);
     }
 }

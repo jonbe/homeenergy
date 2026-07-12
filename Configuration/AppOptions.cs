@@ -5,6 +5,7 @@ public class AppOptions
     public InverterOptions Inverter { get; set; } = new();
     public SolarOptions Solar { get; set; } = new();
     public ChargeAmpsOptions ChargeAmps { get; set; } = new();
+    public BatteryOptions Battery { get; set; } = new();
 
     /// <summary>When true, the charging poller writes PV-Charging mode to the
     /// inverter while a car charges. Off by default so it never fights the
