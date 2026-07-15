@@ -1,4 +1,5 @@
 using HomeEnergy.Configuration;
+using HomeEnergy.Models;
 using HomeEnergy.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -18,6 +19,7 @@ builder.Services.AddSingleton<IHistoryStore, SqliteHistoryStore>();
 
 builder.Services.AddHostedService<PollService>();
 builder.Services.AddHostedService<PriceRefreshService>();
+builder.Services.AddHostedService<ProductionRefreshService>();
 builder.Services.AddHostedService<ForecastRefreshService>();
 builder.Services.AddHostedService<VehicleRefreshService>();
 
@@ -29,20 +31,26 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 
 // Aggregate status for the dashboard.
-app.MapGet("/api/status", (SystemState s, IPlanService planner, IHistoryStore history, ITibberVehicleClient tibber) => Results.Json(new
+app.MapGet("/api/status", (SystemState s, IPlanService planner, IHistoryStore history, ITibberVehicleClient tibber) =>
 {
-    inverter = s.Inverter,
-    prices = s.Prices,
-    charging = s.Charging,
-    solar = s.Solar,
-    vehicles = s.Vehicles,
-    chargers = s.Chargers,
-    tibber = new { connected = tibber.IsConnected },
-    plan = planner.Build(s.Prices, s.Solar, s.Inverter),
-    history = history.TodayHourly(),
-    actions = s.RecentActions(5),
-    serverTime = DateTimeOffset.Now,
-}));
+    var hist = history.TodayHourly();
+    return Results.Json(new
+    {
+        inverter = s.Inverter,
+        prices = CurrentPrice(s.Prices),
+        export = Export(history.TodayExport(), s.Prices?.Currency ?? ""),   // calculated from minute history
+        tibberProduction = s.Production,                       // Tibber-reported
+        charging = s.Charging,
+        solar = s.Solar,
+        vehicles = s.Vehicles,
+        chargers = s.Chargers,
+        tibber = new { connected = tibber.IsConnected },
+        plan = planner.Build(s.Prices, s.Solar, s.Inverter),
+        history = hist,
+        actions = s.RecentActions(5),
+        serverTime = DateTimeOffset.Now,
+    });
+});
 
 // Manual mode override (e.g. from the UI). value = hex like 0x0400 or decimal.
 app.MapPost("/api/mode/{value}", async (string value, ISolintegClient inv, SystemState s, CancellationToken ct) =>
@@ -91,5 +99,19 @@ app.MapGet("/api/vehicles/refresh", async (ITibberVehicleClient vehicles, System
     }
     return Results.Json(snap);
 });
+
+// The snapshot's Current point is only refetched twice a day, so it goes stale
+// as hours pass. Re-derive it from the Today array (all quarter-hour points) at
+// request time so the dashboard always shows the price for the current slot.
+static PriceSnapshot? CurrentPrice(PriceSnapshot? p)
+{
+    if (p is null) return null;
+    var now = DateTimeOffset.Now;
+    var active = p.Today.Where(x => x.StartsAt <= now).MaxBy(x => x.StartsAt);
+    return active is null ? p : p with { Current = active };
+}
+
+static ProductionSnapshot Export(ExportTotals t, string currency) =>
+    new(t.Kwh, t.Value, currency, DateTimeOffset.Now);
 
 app.Run();

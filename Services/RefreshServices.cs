@@ -1,11 +1,14 @@
 namespace HomeEnergy.Services;
 
 /// <summary>Fetches Tibber prices at startup and at fixed daily times
-/// (00:05 and 13:15 — tomorrow's prices publish around 13:00).</summary>
+/// (00:05 and 13:15 — tomorrow's prices publish around 13:00). If a fetch
+/// fails or tomorrow's prices aren't published yet, retries hourly until they
+/// arrive instead of waiting for the next daily slot.</summary>
 public class PriceRefreshService : BackgroundService
 {
     private static readonly TimeOnly[] DailyTimes =
         { new(0, 5), new(13, 15) };
+    private static readonly TimeSpan RetryInterval = TimeSpan.FromHours(1);
 
     private readonly ITibberClient _tibber;
     private readonly SystemState _state;
@@ -25,10 +28,48 @@ public class PriceRefreshService : BackgroundService
             var s = await _tibber.FetchAsync(ct);
             if (s is not null) _state.Prices = s;
 
-            var delay = DailySchedule.UntilNext(DailyTimes);
+            // After 13:00 tomorrow's prices should be available; if we don't
+            // have them yet (fetch failed or Tibber published late), retry
+            // hourly rather than waiting until the next daily slot.
+            var delay = NeedsTomorrow()
+                ? RetryInterval
+                : DailySchedule.UntilNext(DailyTimes);
             _log.LogInformation("Next price refresh in {H:F1} h", delay.TotalHours);
             try { await Task.Delay(delay, ct); } catch (OperationCanceledException) { break; }
         }
+    }
+
+    private bool NeedsTomorrow()
+    {
+        var now = DateTimeOffset.Now;
+        return now.Hour >= 13 && (_state.Prices?.Tomorrow.Count ?? 0) == 0;
+    }
+}
+
+/// <summary>Refreshes Tibber's reported exported-energy/earnings figure every
+/// 30 min. Production data lags real time, so a tighter cadence gains nothing.</summary>
+public class ProductionRefreshService : BackgroundService
+{
+    private static readonly TimeSpan Interval = TimeSpan.FromMinutes(30);
+
+    private readonly ITibberClient _tibber;
+    private readonly SystemState _state;
+
+    public ProductionRefreshService(ITibberClient tibber, SystemState state)
+    {
+        _tibber = tibber;
+        _state = state;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(Interval);
+        do
+        {
+            var s = await _tibber.FetchProductionAsync(ct);
+            if (s is not null) _state.Production = s;
+        }
+        while (await timer.WaitForNextTickAsync(ct));
     }
 }
 

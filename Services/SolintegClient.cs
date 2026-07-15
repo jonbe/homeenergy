@@ -24,6 +24,15 @@ public class SolintegClient : ISolintegClient
     public const ushort ModeFeedIn = 0x0105;
     public const ushort ModeBackup = 0x0103;   // reserves the battery (no discharge to loads)
 
+    // Max-charge (charge-cutoff) SOC holding register; scale 0.1% (raw 800 = 80.0%).
+    // Verified 2026-07-12 by toggling the app setting and re-reading.
+    public const ushort MaxChargeSocRegister = 52506;
+    private const ushort SocRegister = 33000;   // battery SOC, scale 0.01%
+
+    // Prior max-charge ceiling saved while a Backup-mode cap is in effect, so we
+    // can restore the user's setting when leaving Backup. Null = no cap active.
+    private ushort? _savedMaxChargeSoc;
+
     private static readonly Dictionary<int, string> ModeLabels = new()
     {
         [0x0101] = "General",
@@ -90,8 +99,41 @@ public class SolintegClient : ISolintegClient
         using var sock = new TcpClient();
         await sock.ConnectAsync(_opt.Ip, _opt.Port, ct);
         sock.ReceiveTimeout = 6000;
-        await WriteSingle(sock.GetStream(), ModeRegister, value, ct);
+        var stream = sock.GetStream();
+
+        // Entering Backup pins the charge ceiling at the current SOC so the house
+        // battery holds instead of topping up; leaving Backup restores the setting.
+        if (value == ModeBackup)
+            await CapMaxChargeToCurrentSocAsync(stream, ct);
+        else
+            await RestoreMaxChargeAsync(stream, ct);
+
+        await WriteSingle(stream, ModeRegister, value, ct);
         _log.LogInformation("Wrote mode 0x{Value:X4} to register {Reg}", value, ModeRegister);
+    }
+
+    private async Task CapMaxChargeToCurrentSocAsync(NetworkStream s, CancellationToken ct)
+    {
+        if (_savedMaxChargeSoc is not null) return;   // already capped by us
+
+        int socRaw = await ReadU16(s, SocRegister, ct);              // 0.01% units
+        var prior = (ushort)await ReadU16(s, MaxChargeSocRegister, ct); // 0.1% units
+        // SOC (0.01%) -> ceiling units (0.1%) is /10; never raise above the user's ceiling.
+        var cap = (ushort)Math.Clamp((int)Math.Round(socRaw / 10.0), 0, prior);
+        if (cap >= prior) return;   // already at/below current SOC; nothing to pin
+
+        _savedMaxChargeSoc = prior;
+        await WriteSingle(s, MaxChargeSocRegister, cap, ct);
+        _log.LogInformation("Pinned max-charge SOC to {Cap:F1}% (was {Prior:F1}%) for Backup",
+            cap / 10.0, prior / 10.0);
+    }
+
+    private async Task RestoreMaxChargeAsync(NetworkStream s, CancellationToken ct)
+    {
+        if (_savedMaxChargeSoc is not { } prior) return;   // no cap active
+        _savedMaxChargeSoc = null;
+        await WriteSingle(s, MaxChargeSocRegister, prior, ct);
+        _log.LogInformation("Restored max-charge SOC to {Prior:F1}%", prior / 10.0);
     }
 
     public static string ModeLabel(int value) =>

@@ -128,6 +128,9 @@ function solarHourly(rows, max, nowHour) {
   }).join('') + '</div>';
 }
 
+// Display name: the Backup/UPS mode is what we use for car charging.
+const modeName = label => /backup|ups/i.test(label) ? 'Car Charging' : label;
+
 // Map an inverter mode label to the graph's colour classes.
 const modeClass = label => /charg/i.test(label) ? 'm-charge'
   : /feed/i.test(label) ? 'm-feedin'
@@ -225,12 +228,13 @@ async function load() {
   // Inverter / mode
   if (inv) {
     cards.push(`<div class="card"><h2>Inverter</h2>
-      <div class="row"><span>Mode</span><span class="mode ${modeClass(inv.modeLabel)}">${inv.modeLabel}</span></div>
+      <div class="row"><span>Mode</span><span class="mode ${modeClass(inv.modeLabel)}">${modeName(inv.modeLabel)}</span></div>
       <div class="row"><span>Solar now</span><span>${kw(inv.pvPowerW)}</span></div>
       <div class="row"><span>Battery</span><span>${f(inv.batterySoc)}% · ${batFlow(inv.batteryPowerW)}</span></div>
       <div class="row"><span>Grid</span><span>${kw(inv.gridPowerW)}</span></div>
       <div class="row"><span>House load</span><span>${kw(inv.loadPowerW)}</span></div>
       <div class="row"><span>Generated today</span><span>${f(inv.genTodayKwh)} kWh</span></div>
+      ${d.export ? `<div class="row"><span>Exported today (calc)</span><span>${f(d.export.todayKwh,1)} kWh · ${f(d.export.todayProfit,2)} ${d.export.currency}</span></div>` : ''}
       <div class="actions">
         <button class="m-charge" onclick="setMode('0x0400')">PV-Charging</button>
         <button class="m-general" onclick="setMode('0x0101')">General</button>
@@ -290,8 +294,13 @@ async function load() {
     const pmax = allP.length ? Math.max(...allP) : 0;   // shared scale across both days
     const prng = rows => rows?.length ? [f(Math.min(...rows.map(r=>r.total)),2), f(Math.max(...rows.map(r=>r.total)),2)] : [null,null];
     const [tlo,thi] = prng(pr.today), [mlo,mhi] = prng(pr.tomorrow);
+    const pd = d.tibberProduction;
+    const sold = pd && pd.todayKwh!=null
+      ? `<div class="row"><span>Sold today (Tibber)</span><span>${f(pd.todayKwh,1)} kWh · ${f(pd.todayProfit,2)} ${pd.currency}</span></div>`
+      : '';
     cards.push(`<div class="card"><h2>Tibber price (${pr.currency}/kWh)</h2>
       <div class="big">${pr.current?f(pr.current.total,2):'–'} <span class="muted">${pr.current?pr.current.level:''}</span></div>
+      ${sold}
       ${rowLabel('today', tlo, thi, '')}${priceBars(pr.today, pr.current?.startsAt, pmax)}${pr.today?.length?hourAxis():''}
       ${rowLabel('tomorrow', mlo, mhi, '')}${priceBars(pr.tomorrow, null, pmax)}${pr.tomorrow?.length?hourAxis():''}</div>`);
   } else cards.push('<div class="card"><h2>Tibber price</h2><div class="muted">no token / unavailable</div></div>');
@@ -314,7 +323,7 @@ async function load() {
   // Suggested plan (charge vs feed-in across the day)
   if (pl) {
     const nowHour = new Date(d.serverTime).getHours();
-    const legend = `<div class="legend"><span class="c-charge">charge</span><span class="c-feedin">feed-in</span><span class="c-general">general</span><span class="c-backup">UPS</span></div>`;
+    const legend = `<div class="legend"><span class="c-charge">charge</span><span class="c-feedin">feed-in</span><span class="c-general">general</span><span class="c-backup">car charging</span></div>`;
     cards.push(`<div class="card"><h2>Suggested plan</h2>
       <div class="row"><span>Battery</span><span>${f(inv?.batterySoc)}% · need ${f(pl.todayDeficitKwh)} kWh to full (${f(pl.batteryCapacityKwh,0)} kWh)</span></div>
       ${legend}

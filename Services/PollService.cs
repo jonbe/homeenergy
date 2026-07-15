@@ -71,9 +71,20 @@ public class PollService : BackgroundService
         {
             await _history.LogMinuteAsync(DateTimeOffset.Now, stats.ModeLabel,
                 stats.PvPowerW, stats.BatterySoc, stats.GridPowerW, stats.LoadPowerW,
-                _state.Prices?.Current?.Total, ct);
+                CurrentPrice(), ct);
         }
         catch (Exception ex) { _log.LogWarning(ex, "history log failed"); }
+    }
+
+    // Snapshot.Current is only refetched twice a day, so it goes stale between
+    // fetches. Derive the price for the active slot from the Today array instead
+    // so each history sample records the real current price, not a frozen value.
+    private double? CurrentPrice()
+    {
+        var today = _state.Prices?.Today;
+        if (today is null) return null;
+        var now = DateTimeOffset.Now;
+        return today.Where(p => p.StartsAt <= now).MaxBy(p => p.StartsAt)?.Total;
     }
 
     private async Task ApplyAutomation(ChargingSnapshot charging, InverterStats stats, CancellationToken ct)

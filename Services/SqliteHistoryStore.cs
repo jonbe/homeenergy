@@ -134,4 +134,27 @@ public class SqliteHistoryStore : IHistoryStore
 
         static double? Num(SqliteDataReader r, int i) => r.IsDBNull(i) ? null : r.GetDouble(i);
     }
+
+    public ExportTotals TodayExport()
+    {
+        try
+        {
+            using var conn = Open();
+            using var cmd = conn.CreateCommand();
+            // grid_w is negative while exporting; over one ~1-minute sample the
+            // energy is W/60000 kWh. Value skips minutes with no logged price.
+            cmd.CommandText = """
+                SELECT COALESCE(SUM(-grid_w) / 60000.0, 0),
+                       COALESCE(SUM(-grid_w / 60000.0 * price), 0)
+                FROM stats_minute
+                WHERE ts LIKE :like AND grid_w < 0;
+                """;
+            cmd.Parameters.AddWithValue(":like", DateTimeOffset.Now.ToString("yyyy-MM-dd") + "%");
+            using var r = cmd.ExecuteReader();
+            if (r.Read())
+                return new ExportTotals(r.GetDouble(0), r.GetDouble(1));
+        }
+        catch (Exception ex) { _log.LogWarning(ex, "export total read failed"); }
+        return new ExportTotals(0, 0);
+    }
 }

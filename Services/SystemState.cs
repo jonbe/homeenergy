@@ -7,6 +7,7 @@ public class SystemState
 {
     public volatile InverterStats? Inverter;
     public volatile PriceSnapshot? Prices;
+    public volatile ProductionSnapshot? Production;   // Tibber-reported, for comparison
     public volatile ChargingSnapshot? Charging;
     public volatile SolarSnapshot? Solar;
     public volatile VehicleSnapshot? Vehicles;
