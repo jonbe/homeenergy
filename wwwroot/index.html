@@ -42,8 +42,11 @@
   .slot.idle, .slot.general { background:#345; }
   .slot.backup { background:#e33; }
   .slot.now { outline:2px solid #8ab4f8; outline-offset:-1px; }
-  .legend { display:flex; gap:1rem; font-size:.7rem; color:#aaa; margin:.5rem 0 .1rem; }
-  .legend span::before { content:''; display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:.35rem; vertical-align:-1px; }
+  .legend { display:flex; gap:1rem; font-size:.7rem; color:#aaa; margin:.5rem 0 .1rem; flex-wrap:wrap; }
+  .legend.below { margin:.4rem 0 0; justify-content:center; }
+  .legend span::before, .legend label span::before { content:''; display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:.35rem; vertical-align:-1px; }
+  .legend label { cursor:pointer; display:inline-flex; align-items:center; }
+  .legend label input { margin:0 .3rem 0 0; }
   .legend .c-charge::before { background:#2f5; }
   .legend .c-feedin::before { background:#f95; }
   .legend .c-general::before { background:#345; }
@@ -54,6 +57,7 @@
   .legend .c-sell::before { background:#ff922b; }
   .legend .c-batt::before { background:#4dabf7; }
   .legend .c-price::before { background:#69db7c; }
+  .legend .c-mode::before { background:linear-gradient(90deg,#2f5,#f95,#e33); }
   .chartwrap { position:relative; padding:0 22px 16px 30px; margin-top:.5rem; }
   .chart { display:block; width:100%; height:150px; }
   .ylabels { position:absolute; top:0; height:150px; display:flex; flex-direction:column; justify-content:space-between; font-size:.6rem; color:#777; }
@@ -76,6 +80,7 @@
   h2 .icon { float:right; background:none; border:none; color:#8ac; font-size:1.05rem; line-height:1; padding:0 .1rem; }
   h2 .icon:hover { background:none; color:#cde; }
   h2 .icon.spin { animation:spin .8s linear infinite; }
+  h2 .icon:disabled { color:#555; cursor:default; }
   @keyframes spin { to { transform:rotate(360deg); } }
 </style>
 </head>
@@ -164,18 +169,88 @@ function planStrip(rows, nowHour) {
   }).join('') + '</div>';
 }
 
-// Line chart of today's logged samples. Shared left axis 0–15000: PV/load/grid
+// Day-navigable history chart state. histOffset: 0=today, -1=yesterday, …
+// (never > 0). histHidden: series keys the user has unticked; persists across
+// day changes. histCache: fetched rows per YYYY-MM-DD for non-today days.
+let histOffset = 0, histHidden = new Set(), histCache = {}, histBands = true;
+let histToday = [], histNowHour = -1, histBaseMs = Date.now();
+
+// The chart series, in draw order. acc() maps an hour row to its axis value.
+const SERIES = [
+  { key:'grid',  cls:'s-grid',  lc:'c-grid',  label:'grid buy',  acc:r=>r.gridW==null?null:Math.max(r.gridW,0) },
+  { key:'sell',  cls:'s-sell',  lc:'c-sell',  label:'grid sell', acc:r=>r.gridW==null?null:Math.max(-r.gridW,0) },
+  { key:'pv',    cls:'s-pv',    lc:'c-pv',    label:'PV',        acc:r=>r.solarW },
+  { key:'load',  cls:'s-load',  lc:'c-load',  label:'load',      acc:r=>r.loadW },
+  { key:'batt',  cls:'s-batt',  lc:'c-batt',  label:'battery %', acc:r=>r.batteryPct==null?null:r.batteryPct*100 },
+  { key:'price', cls:'s-price', lc:'c-price', label:'price',     acc:r=>r.price==null?null:r.price*5000 },
+];
+
+function dateKey(offset) {
+  const d = new Date(histBaseMs);
+  d.setDate(d.getDate() + offset);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+}
+
+function toggleSeries(key) {
+  if (histHidden.has(key)) histHidden.delete(key); else histHidden.add(key);
+  paintHist();
+}
+
+function toggleBands() { histBands = !histBands; paintHist(); }
+
+async function navDay(delta) {
+  const n = Math.min(0, histOffset + delta);
+  if (n === histOffset) return;
+  histOffset = n;
+  const key = dateKey(histOffset);
+  if (histOffset !== 0 && histCache[key] === undefined) {
+    paintHist();   // show "loading…" while the day is fetched
+    try { histCache[key] = await (await fetch('/api/history/' + key)).json(); }
+    catch { histCache[key] = []; }
+  }
+  paintHist();
+}
+
+function paintHist() {
+  const el = document.getElementById('histcard');
+  if (el) el.innerHTML = renderHistCard();
+}
+
+// Builds the inner HTML of the day-navigable history card (title + arrows,
+// chart, and the below-chart legend of togglable series).
+function renderHistCard() {
+  const isToday = histOffset === 0;
+  const key = dateKey(histOffset);
+  const rows = isToday ? histToday : histCache[key];
+  const title = isToday ? 'Today (live)' : key;
+  const h2 = `<h2>${title}` +
+    `<button class="icon" onclick="navDay(1)" ${isToday?'disabled':''} title="Next day">&#x203a;</button>` +
+    `<button class="icon" onclick="navDay(-1)" title="Previous day">&#x2039;</button></h2>`;
+  let body;
+  if (rows === undefined) body = '<div class="muted">loading…</div>';
+  else if (!rows.length || !rows.some(r=>r.mode)) body = '<div class="muted">no data for this day</div>';
+  else body = historyChart(rows, isToday ? histNowHour : -1);
+  const legend = '<div class="legend below">' + SERIES.map(s=>
+    `<label><input type="checkbox" ${histHidden.has(s.key)?'':'checked'} onchange="toggleSeries('${s.key}')"><span class="${s.lc}">${s.label}</span></label>`
+  ).join('') +
+    `<label><input type="checkbox" ${histBands?'checked':''} onchange="toggleBands()"><span class="c-mode">mode</span></label>` +
+  '</div>';
+  return h2 + body + legend;
+}
+
+// Line chart of a day's logged samples. Shared left axis 0–15000: PV/load/grid
 // in W (×1), battery % as ×100 (100% = 10000), price ×5000 (right axis 0–3 SEK).
 // Grid splits into buy (import, +gridW) and sell (export, −gridW); each clamps to
 // 0 so the inactive direction sits on the axis. Battery discharge / negative
-// prices also clamp to 0.
+// prices also clamp to 0. Series in histHidden are skipped.
 function historyChart(rows, nowHour) {
   if (!rows || !rows.length || !rows.some(r=>r.mode)) return '';
   const W = 240, H = 100, MAX = 15000, cw = W/24;
   const x = h => (h + 0.5) * cw;
   const y = v => (1 - Math.min(Math.max(v, 0), MAX) / MAX) * H;
-  const bands = rows.filter(r=>r.mode).map(r=>
-    `<rect class="band ${modeSlot(r.mode)}" x="${(r.hour*cw).toFixed(1)}" y="0" width="${cw.toFixed(1)}" height="${H}"/>`).join('');
+  const bands = histBands ? rows.filter(r=>r.mode).map(r=>
+    `<rect class="band ${modeSlot(r.mode)}" x="${(r.hour*cw).toFixed(1)}" y="0" width="${cw.toFixed(1)}" height="${H}"/>`).join('') : '';
   const grid = [5000,10000].map(v=>`<line class="gl" x1="0" y1="${y(v).toFixed(1)}" x2="${W}" y2="${y(v).toFixed(1)}"/>`).join('');
   const now = nowHour>=0 ? `<line class="nowline" x1="${x(nowHour).toFixed(1)}" y1="0" x2="${x(nowHour).toFixed(1)}" y2="${H}"/>` : '';
   const path = acc => {
@@ -188,15 +263,10 @@ function historyChart(rows, nowHour) {
     }
     return d;
   };
-  const ser = (cls, acc) => `<path class="ser ${cls}" d="${path(acc)}"/>`;
+  const ser = SERIES.filter(s=>!histHidden.has(s.key))
+    .map(s=>`<path class="ser ${s.cls}" d="${path(s.acc)}"/>`).join('');
   const svg = `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-    ${bands}${grid}${now}
-    ${ser('s-grid', r=>r.gridW==null?null:Math.max(r.gridW,0))}
-    ${ser('s-sell', r=>r.gridW==null?null:Math.max(-r.gridW,0))}
-    ${ser('s-pv', r=>r.solarW)}
-    ${ser('s-load', r=>r.loadW)}
-    ${ser('s-batt', r=>r.batteryPct==null?null:r.batteryPct*100)}
-    ${ser('s-price', r=>r.price==null?null:r.price*5000)}
+    ${bands}${grid}${now}${ser}
   </svg>`;
   const left = ['15k','10k','5k','0'].map(t=>`<span>${t}</span>`).join('');
   const right = ['3.0','2.0','1.0','0'].map(t=>`<span>${t}</span>`).join('');
@@ -222,6 +292,12 @@ async function load() {
 
   const inv = d.inverter, pr = d.prices, ch = d.charging, so = d.solar, pl = d.plan, ve = d.vehicles, cg = d.chargers;
   document.getElementById('updated').textContent = 'updated ' + time(d.serverTime);
+
+  // Refresh the day-navigable chart's "today" data on every poll.
+  histToday = d.history || [];
+  const stime = new Date(d.serverTime);
+  histNowHour = stime.getHours();
+  histBaseMs = new Date(stime.getFullYear(), stime.getMonth(), stime.getDate()).getTime();
 
   const cards = [];
 
@@ -332,12 +408,10 @@ async function load() {
       ${rowLabel('planned tomorrow', null, null, '')}${planStrip(pl.tomorrow, -1)}${hourAxis()}</div>`);
   }
 
-  // Today (live) — line chart of the logged minute/hour history.
-  if (d.history?.some(r=>r.mode)) {
-    const nowHour = new Date(d.serverTime).getHours();
-    const legend = `<div class="legend"><span class="c-pv">PV</span><span class="c-load">load</span><span class="c-grid">grid buy</span><span class="c-sell">grid sell</span><span class="c-batt">battery %</span><span class="c-price">price</span></div>`;
-    cards.push(`<div class="card"><h2>Today (live)</h2>${legend}${historyChart(d.history, nowHour)}</div>`);
-  }
+  // Day-navigable line chart of the logged minute/hour history. Shown once
+  // there's data today, or whenever the user has navigated to another day.
+  if (histOffset !== 0 || d.history?.some(r=>r.mode))
+    cards.push(`<div class="card" id="histcard">${renderHistCard()}</div>`);
 
   // Automation log — last few actions, newest first, one per line.
   if (d.actions?.length) {

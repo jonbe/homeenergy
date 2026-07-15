@@ -59,6 +59,7 @@ internal sealed class FakeHistoryStore : IHistoryStore
         return Task.CompletedTask;
     }
     public IReadOnlyList<HistoryHour> TodayHourly() => Array.Empty<HistoryHour>();
+    public IReadOnlyList<HistoryHour> HourlyForDate(DateOnly date) => Array.Empty<HistoryHour>();
     public ExportTotals TodayExport() => new(0, 0);
 }
 

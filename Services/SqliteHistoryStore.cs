@@ -107,7 +107,10 @@ public class SqliteHistoryStore : IHistoryStore
         }
     }
 
-    public IReadOnlyList<HistoryHour> TodayHourly()
+    public IReadOnlyList<HistoryHour> TodayHourly() =>
+        HourlyForDate(DateOnly.FromDateTime(DateTimeOffset.Now.DateTime));
+
+    public IReadOnlyList<HistoryHour> HourlyForDate(DateOnly date)
     {
         var byHour = new Dictionary<int, HistoryHour>();
         try
@@ -118,7 +121,7 @@ public class SqliteHistoryStore : IHistoryStore
                 SELECT ts, mode, solar_w, battery_pct, grid_w, load_w, price
                 FROM stats_hour WHERE ts LIKE :like;
                 """;
-            cmd.Parameters.AddWithValue(":like", DateTimeOffset.Now.ToString("yyyy-MM-dd") + "%");
+            cmd.Parameters.AddWithValue(":like", date.ToString("yyyy-MM-dd") + "%");
             using var r = cmd.ExecuteReader();
             while (r.Read())
             {

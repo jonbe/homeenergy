@@ -52,6 +52,13 @@ app.MapGet("/api/status", (SystemState s, IPlanService planner, IHistoryStore hi
     });
 });
 
+// Hourly history for a specific local date (YYYY-MM-DD), for the day-navigable
+// chart. Returns the same 24-row shape as the status endpoint's today history.
+app.MapGet("/api/history/{date}", (string date, IHistoryStore history) =>
+    DateOnly.TryParseExact(date, "yyyy-MM-dd", out var d)
+        ? Results.Json(history.HourlyForDate(d))
+        : Results.BadRequest("date must be YYYY-MM-DD"));
+
 // Manual mode override (e.g. from the UI). value = hex like 0x0400 or decimal.
 app.MapPost("/api/mode/{value}", async (string value, ISolintegClient inv, SystemState s, CancellationToken ct) =>
 {
