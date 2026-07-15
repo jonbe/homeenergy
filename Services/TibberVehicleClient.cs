@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using HomeEnergy.Configuration;
 using HomeEnergy.Models;
+using Microsoft.Extensions.Options;
 
 namespace HomeEnergy.Services;
 
@@ -23,7 +24,7 @@ public class TibberVehicleClient : ITibberVehicleClient
     private const string AuthorizeUrl = Authority + "/connect/authorize";
     private const string TokenUrl = Authority + "/connect/token";
     private const string DataApi = "https://data-api.tibber.com";
-    private const string RedirectUri = "http://localhost:5034/tibber/callback";
+    private const string CallbackPath = "/tibber/callback";
     private const string Scopes = "openid offline_access data-api-homes-read data-api-vehicles-read data-api-chargers-read";
 
     private readonly IHttpClientFactory _http;
@@ -32,8 +33,10 @@ public class TibberVehicleClient : ITibberVehicleClient
     private readonly string _tokenFile;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
-    // In-flight authorize requests: state -> PKCE code_verifier.
-    private readonly ConcurrentDictionary<string, string> _pending = new();
+    // In-flight authorize requests: state -> (PKCE code_verifier, redirect_uri).
+    // The redirect_uri must be echoed identically at token-exchange time, so we
+    // capture the value used at authorize time rather than rebuilding it.
+    private readonly ConcurrentDictionary<string, (string Verifier, string Redirect)> _pending = new();
 
     private string? _accessToken;
     private DateTimeOffset _accessExpiry;
@@ -41,18 +44,18 @@ public class TibberVehicleClient : ITibberVehicleClient
 
     public TibberVehicleClient(
         IHttpClientFactory http, ISecretProvider secrets,
-        ILogger<TibberVehicleClient> log, IWebHostEnvironment env)
+        ILogger<TibberVehicleClient> log, IOptions<AppOptions> opt, IWebHostEnvironment env)
     {
         _http = http;
         _secrets = secrets;
         _log = log;
-        _tokenFile = Path.Combine(env.ContentRootPath, "tibber_tokens.json");
+        _tokenFile = DataPaths.Resolve(opt.Value, env.ContentRootPath, "tibber_tokens.json");
         _refreshToken = LoadRefreshToken();
     }
 
     public bool IsConnected => _refreshToken is not null;
 
-    public string? BuildAuthorizeUrl()
+    public string? BuildAuthorizeUrl(string requestOrigin)
     {
         var clientId = _secrets.Get("TIBBER_DATAAPI_CLIENT_ID");
         if (clientId is null)
@@ -61,16 +64,17 @@ public class TibberVehicleClient : ITibberVehicleClient
             return null;
         }
 
+        var redirectUri = requestOrigin.TrimEnd('/') + CallbackPath;
         var verifier = Base64Url(RandomNumberGenerator.GetBytes(32));
         var challenge = Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
         var state = Base64Url(RandomNumberGenerator.GetBytes(16));
-        _pending[state] = verifier;
+        _pending[state] = (verifier, redirectUri);
 
         var q = new Dictionary<string, string>
         {
             ["client_id"] = clientId,
             ["response_type"] = "code",
-            ["redirect_uri"] = RedirectUri,
+            ["redirect_uri"] = redirectUri,
             ["scope"] = Scopes,
             ["state"] = state,
             ["code_challenge"] = challenge,
@@ -83,7 +87,7 @@ public class TibberVehicleClient : ITibberVehicleClient
 
     public async Task<bool> HandleCallbackAsync(string code, string state, CancellationToken ct)
     {
-        if (!_pending.TryRemove(state, out var verifier))
+        if (!_pending.TryRemove(state, out var pending))
         {
             _log.LogWarning("Tibber OAuth callback with unknown state");
             return false;
@@ -93,8 +97,8 @@ public class TibberVehicleClient : ITibberVehicleClient
         {
             ["grant_type"] = "authorization_code",
             ["code"] = code,
-            ["redirect_uri"] = RedirectUri,
-            ["code_verifier"] = verifier,
+            ["redirect_uri"] = pending.Redirect,
+            ["code_verifier"] = pending.Verifier,
         };
         return await ExchangeAsync(form, ct);
     }

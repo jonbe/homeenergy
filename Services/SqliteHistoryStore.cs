@@ -1,5 +1,7 @@
+using HomeEnergy.Configuration;
 using HomeEnergy.Models;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
 
 namespace HomeEnergy.Services;
 
@@ -15,9 +17,9 @@ public class SqliteHistoryStore : IHistoryStore
     private readonly string _connString;
     private readonly ILogger<SqliteHistoryStore> _log;
 
-    public SqliteHistoryStore(IHostEnvironment env, ILogger<SqliteHistoryStore> log)
+    public SqliteHistoryStore(IOptions<AppOptions> opt, IHostEnvironment env, ILogger<SqliteHistoryStore> log)
     {
-        var path = Path.Combine(env.ContentRootPath, "history.db");
+        var path = DataPaths.Resolve(opt.Value, env.ContentRootPath, "history.db");
         _connString = new SqliteConnectionStringBuilder { DataSource = path }.ToString();
         _log = log;
     }

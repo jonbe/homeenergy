@@ -11,8 +11,10 @@ public interface ITibberVehicleClient
     bool IsConnected { get; }
 
     /// <summary>Builds the OAuth authorize URL (with PKCE) to send the user's
-    /// browser to. Returns null if the client id is not configured.</summary>
-    string? BuildAuthorizeUrl();
+    /// browser to. <paramref name="requestOrigin"/> is the scheme://host[:port]
+    /// of the incoming request; the callback path is appended to form the
+    /// redirect URI. Returns null if the client id is not configured.</summary>
+    string? BuildAuthorizeUrl(string requestOrigin);
 
     /// <summary>Exchanges the authorization code returned to the callback for
     /// tokens. Returns false on a bad/unknown state or a failed exchange.</summary>

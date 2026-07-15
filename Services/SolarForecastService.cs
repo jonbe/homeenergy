@@ -33,7 +33,7 @@ public class SolarForecastService : ISolarForecastService
         _inverter = inverter;
         _http = http;
         _log = log;
-        _historyPath = Path.Combine(env.ContentRootPath, "solar_pr_history.csv");
+        _historyPath = DataPaths.Resolve(opt.Value, env.ContentRootPath, "solar_pr_history.csv");
     }
 
     private string OpenMeteoUrl =>

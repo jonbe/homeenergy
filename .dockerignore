@@ -1,0 +1,28 @@
+# Build output
+**/bin/
+**/obj/
+
+# Git / CI / IDE
+.git/
+.github/
+.gitignore
+.vs/
+.vscode/
+.idea/
+
+# Tests (not part of the published app)
+HomeEnergy.Tests/
+
+# Local data / secrets — must never be baked into the image
+history.db
+history.db-wal
+history.db-shm
+tibber_tokens.json
+solar_pr_history.csv
+appsettings.*.local.json
+*.env
+
+# Docs / misc
+Dockerfile
+docker-compose.yml
+README*.md

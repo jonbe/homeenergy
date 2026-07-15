@@ -65,9 +65,10 @@ app.MapPost("/api/mode/{value}", async (string value, ISolintegClient inv, Syste
 
 // One-time OAuth consent to the Tibber Data API (car battery SoC).
 // Open /tibber/connect in a browser; Tibber redirects back to /tibber/callback.
-app.MapGet("/tibber/connect", (ITibberVehicleClient vehicles) =>
+app.MapGet("/tibber/connect", (HttpRequest req, ITibberVehicleClient vehicles) =>
 {
-    var url = vehicles.BuildAuthorizeUrl();
+    var origin = $"{req.Scheme}://{req.Host}";
+    var url = vehicles.BuildAuthorizeUrl(origin);
     return url is null
         ? Results.Problem("TIBBER_DATAAPI_CLIENT_ID not configured")
         : Results.Redirect(url);

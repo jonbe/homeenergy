@@ -1,0 +1,22 @@
+services:
+  homeenergy:
+    image: ghcr.io/jonbe/homeenergy:latest
+    container_name: homeenergy
+    restart: unless-stopped
+    ports:
+      # host:container — reach the dashboard at http://<nas-ip>:5034
+      - "5034:8080"
+    volumes:
+      # Persistent data disk on the NAS; survives image updates.
+      - /volume1/docker/homeenergy/data:/data
+    environment:
+      - TZ=Europe/Stockholm
+      - HomeEnergy__DataDir=/data
+      - HomeEnergy__AutomationEnabled=true
+      # Secrets — set these on the NAS (Container Manager env, or a .env file
+      # next to this compose). Do NOT commit real values.
+      - TIBBER_TOKEN=${TIBBER_TOKEN}
+      - TIBBER_DATAAPI_CLIENT_ID=${TIBBER_DATAAPI_CLIENT_ID}
+      - TIBBER_DATAAPI_CLIENT_SECRET=${TIBBER_DATAAPI_CLIENT_SECRET}
+      - CHARGEAMPS_EMAIL=${CHARGEAMPS_EMAIL}
+      - CHARGEAMPS_PASSWORD=${CHARGEAMPS_PASSWORD}
