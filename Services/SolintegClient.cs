@@ -25,6 +25,12 @@ public class SolintegClient : ISolintegClient
     public const ushort ModeFeedIn = 0x0105;
     public const ushort ModeBackup = 0x0103;   // reserves the battery (no discharge to loads)
 
+    // Economic-mode charge/discharge schedule table (53006..53048). Empty = all
+    // zeros. One charge period occupies the first 8 registers; the layout below
+    // replicates exactly what the Solinteg app writes for a "charge from PV+GRID"
+    // period (verified 2026-07-21 by writing one in the app and reading it back).
+    public const ushort ChargeWindowRegister = 53006;
+
     // Max-charge (charge-cutoff) SOC holding register; scale 0.1% (raw 800 = 80.0%).
     // Verified 2026-07-12 by toggling the app setting and re-reading.
     public const ushort MaxChargeSocRegister = 52506;
@@ -87,6 +93,18 @@ public class SolintegClient : ISolintegClient
         }
     }
 
+    public async Task<ushort[]> ReadHoldingRawAsync(ushort start, ushort count, CancellationToken ct)
+    {
+        using var sock = new TcpClient();
+        await sock.ConnectAsync(_opt.Ip, _opt.Port, ct);
+        sock.ReceiveTimeout = 6000;
+        var bytes = await ReadHolding(sock.GetStream(), start, count, ct);
+        var regs = new ushort[count];
+        for (int i = 0; i < count; i++)
+            regs[i] = BinaryPrimitives.ReadUInt16BigEndian(bytes.AsSpan(i * 2));
+        return regs;
+    }
+
     public async Task<double> ReadGenTodayKwhAsync(CancellationToken ct)
     {
         using var sock = new TcpClient();
@@ -112,6 +130,40 @@ public class SolintegClient : ISolintegClient
         await WriteSingle(stream, ModeRegister, value, ct);
         _log.LogInformation("Wrote mode 0x{Value:X4} to register {Reg}", value, ModeRegister);
     }
+
+    // Program a single grid-charge window into the Economic-mode schedule. Byte
+    // layout mirrors the app's own record: three structural flags = 1 (charge +
+    // include grid), two 0xFFFF power placeholders, target SOC at 0.1% scale, and
+    // start/stop times packed as 0xHHMM. Economic mode (0x0102) must be active for
+    // the inverter to act on it.
+    public async Task WriteChargeWindowAsync(TimeOnly start, TimeOnly end, double socPercent, CancellationToken ct)
+    {
+        using var sock = new TcpClient();
+        await sock.ConnectAsync(_opt.Ip, _opt.Port, ct);
+        sock.ReceiveTimeout = 6000;
+        var s = sock.GetStream();
+
+        ushort soc = (ushort)Math.Clamp((int)Math.Round(socPercent * 10), 0, 1000);
+        ushort[] record = { 1, 1, 1, 0xFFFF, soc, 0xFFFF, Hhmm(start), Hhmm(end) };
+        await WriteMultiple(s, ChargeWindowRegister, record, ct);
+
+        _log.LogInformation("Wrote grid-charge window {Start:HH\\:mm}-{End:HH\\:mm} target {Soc:F0}%",
+            start, end, socPercent);
+    }
+
+    // Clear the first charge period back to all-zeros (the pristine empty state).
+    public async Task ClearChargeWindowAsync(CancellationToken ct)
+    {
+        using var sock = new TcpClient();
+        await sock.ConnectAsync(_opt.Ip, _opt.Port, ct);
+        sock.ReceiveTimeout = 6000;
+        var s = sock.GetStream();
+        await WriteMultiple(s, ChargeWindowRegister, new ushort[8], ct);
+        _log.LogInformation("Cleared grid-charge window (reg {Reg}..{End})",
+            ChargeWindowRegister, ChargeWindowRegister + 7);
+    }
+
+    private static ushort Hhmm(TimeOnly t) => (ushort)((t.Hour << 8) | t.Minute);
 
     private async Task CapMaxChargeToCurrentSocAsync(NetworkStream s, CancellationToken ct)
     {
@@ -181,6 +233,34 @@ public class SolintegClient : ISolintegClient
         var body = await ReadExact(s, len - 1, ct);
         if ((body[0] & 0x80) != 0)
             throw new IOException($"Modbus write exception 0x{body[1]:X2} at reg {addr}");
+    }
+
+    // FC 0x10: write a contiguous block of holding registers in one frame. The
+    // Economic-mode schedule rejects single-register writes (FC 0x06) to interior
+    // addresses, so the whole record must go as one multi-write.
+    private async Task WriteMultiple(NetworkStream s, ushort addr, ushort[] values, CancellationToken ct)
+    {
+        var tid = ++_tid;
+        int qty = values.Length;
+        int byteCount = qty * 2;
+        var frame = new byte[13 + byteCount];
+        BinaryPrimitives.WriteUInt16BigEndian(frame.AsSpan(0), tid);
+        BinaryPrimitives.WriteUInt16BigEndian(frame.AsSpan(2), 0);
+        BinaryPrimitives.WriteUInt16BigEndian(frame.AsSpan(4), (ushort)(7 + byteCount));
+        frame[6] = _opt.Unit;
+        frame[7] = 0x10;
+        BinaryPrimitives.WriteUInt16BigEndian(frame.AsSpan(8), addr);
+        BinaryPrimitives.WriteUInt16BigEndian(frame.AsSpan(10), (ushort)qty);
+        frame[12] = (byte)byteCount;
+        for (int i = 0; i < qty; i++)
+            BinaryPrimitives.WriteUInt16BigEndian(frame.AsSpan(13 + i * 2), values[i]);
+        await s.WriteAsync(frame, ct);
+
+        var hdr = await ReadExact(s, 7, ct);
+        int len = BinaryPrimitives.ReadUInt16BigEndian(hdr.AsSpan(4));
+        var body = await ReadExact(s, len - 1, ct);
+        if ((body[0] & 0x80) != 0)
+            throw new IOException($"Modbus write-multi exception 0x{body[1]:X2} at reg {addr}");
     }
 
     private async Task<int> ReadU16(NetworkStream s, ushort addr, CancellationToken ct)

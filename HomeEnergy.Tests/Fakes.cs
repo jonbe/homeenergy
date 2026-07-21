@@ -34,6 +34,25 @@ internal sealed class FakeSolintegClient : ISolintegClient
         WriteCount++;
         return Task.CompletedTask;
     }
+
+    public Task<ushort[]> ReadHoldingRawAsync(ushort start, ushort count, CancellationToken ct) =>
+        Task.FromResult(new ushort[count]);
+
+    public (TimeOnly Start, TimeOnly End, double Soc)? LastChargeWindow { get; private set; }
+    public int ChargeWindowClears { get; private set; }
+
+    public Task WriteChargeWindowAsync(TimeOnly start, TimeOnly end, double socPercent, CancellationToken ct)
+    {
+        LastChargeWindow = (start, end, socPercent);
+        return Task.CompletedTask;
+    }
+
+    public Task ClearChargeWindowAsync(CancellationToken ct)
+    {
+        ChargeWindowClears++;
+        LastChargeWindow = null;
+        return Task.CompletedTask;
+    }
 }
 
 internal sealed class FakeChargeAmpsClient : IChargeAmpsClient

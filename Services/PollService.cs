@@ -26,6 +26,10 @@ public class PollService : BackgroundService
     private readonly AppOptions _opt;
     private readonly ILogger<PollService> _log;
 
+    // The grid-charge window we currently have programmed into the inverter's
+    // Economic schedule, or null if none. Tracked so we only write on change.
+    private (TimeOnly Start, TimeOnly End, int Soc)? _chargeWindow;
+
     public PollService(ISolintegClient inverter, IChargeAmpsClient chargeAmps,
         IPlanService plan, IHistoryStore history, SystemState state, IOptions<AppOptions> opt,
         ILogger<PollService> log)
@@ -89,7 +93,17 @@ public class PollService : BackgroundService
 
     private async Task ApplyAutomation(ChargingSnapshot charging, InverterStats stats, CancellationToken ct)
     {
-        var (desired, reason) = DesiredMode(charging, stats);
+        var plan = _plan.Build(_state.Prices, _state.Solar, stats);
+
+        // Grid-charge scheduling: while the low-sun plan wants to import into the
+        // battery this hour (and no car is charging) program a matching Economic
+        // window; otherwise make sure any window we set is cleared.
+        if (!charging.AnyCharging && plan is not null)
+            await SyncChargeWindow(plan, stats, ct);
+        else if (_chargeWindow is not null)
+            await ClearChargeWindow(ct);
+
+        var (desired, reason) = DesiredMode(charging, plan);
         if (desired is not ushort want) return;
 
         int currentMode = Convert.ToInt32(stats.ModeRaw, 16);
@@ -102,14 +116,59 @@ public class PollService : BackgroundService
     // A charging car forces Backup/UPS (reserves the battery); otherwise follow
     // the plan's current hour. Returns (null, _) when there is no plan yet,
     // meaning "leave the mode alone".
-    private (ushort? mode, string reason) DesiredMode(ChargingSnapshot charging, InverterStats stats)
+    private (ushort? mode, string reason) DesiredMode(ChargingSnapshot charging, PlanSnapshot? plan)
     {
         if (charging.AnyCharging)
             return (SolintegClient.ModeBackup, "Car charging");
 
-        var plan = _plan.Build(_state.Prices, _state.Solar, stats);
         var slot = plan?.Today.FirstOrDefault(h => h.Hour == DateTimeOffset.Now.Hour);
         return slot is null ? (null, "") : (ModeForAction(slot.Action), $"Plan ({slot.Action})");
+    }
+
+    // Program (or clear) the Economic-mode charge window to match the plan's run
+    // of consecutive "gridcharge" hours starting at the current hour. The window
+    // charges up to a stop-SOC sized from the plan's remaining grid-charge need.
+    private async Task SyncChargeWindow(PlanSnapshot plan, InverterStats stats, CancellationToken ct)
+    {
+        var run = GridChargeRun(plan.Today, DateTimeOffset.Now.Hour);
+        if (run is not (int startHour, int endHour))
+        {
+            if (_chargeWindow is not null) await ClearChargeWindow(ct);
+            return;
+        }
+
+        var start = new TimeOnly(startHour, 0);
+        var end = endHour >= 24 ? new TimeOnly(23, 59) : new TimeOnly(endHour, 0);
+
+        // Same run already programmed — leave the frozen stop-SOC alone so a
+        // rising SOC doesn't cause a rewrite every minute.
+        if (_chargeWindow is { } w && w.Start == start && w.End == end) return;
+
+        int soc = plan.BatteryCapacityKwh <= 0 ? 100
+            : (int)Math.Round(Math.Clamp(
+                stats.BatterySoc + plan.PlannedGridChargeKwh / plan.BatteryCapacityKwh * 100, 0, 100));
+
+        await _inverter.WriteChargeWindowAsync(start, end, soc, ct);
+        _chargeWindow = (start, end, soc);
+        SetAction($"Grid-charge window {start:HH\\:mm}-{end:HH\\:mm} -> {soc}%");
+    }
+
+    private async Task ClearChargeWindow(CancellationToken ct)
+    {
+        await _inverter.ClearChargeWindowAsync(ct);
+        _chargeWindow = null;
+        SetAction("Grid-charge window cleared");
+    }
+
+    // The block of consecutive "gridcharge" hours starting at the current hour,
+    // as (startHour, endHourExclusive), or null if now isn't a gridcharge hour.
+    private static (int Start, int End)? GridChargeRun(IReadOnlyList<PlanHour> today, int currentHour)
+    {
+        if (today.FirstOrDefault(h => h.Hour == currentHour)?.Action != "gridcharge")
+            return null;
+        int end = currentHour + 1;
+        while (today.FirstOrDefault(h => h.Hour == end)?.Action == "gridcharge") end++;
+        return (currentHour, end);
     }
 
     private static ushort? ModeForAction(string action) => action switch

@@ -94,6 +94,37 @@ app.MapPost("/api/mode/{value}", async (string value, ISolintegClient inv, Syste
     return Results.Ok(new { mode = $"0x{mode:X4}", label = SolintegClient.ModeLabel(mode) });
 });
 
+// Read-only diagnostic: dump a raw holding-register range as hex + decimal, for
+// inspecting undocumented tables like the ToU charge-period schedule.
+app.MapGet("/api/regs/{start:int}/{count:int}", async (int start, int count, ISolintegClient inv, CancellationToken ct) =>
+{
+    if (count is < 1 or > 125) return Results.BadRequest(new { error = "count 1..125" });
+    var regs = await inv.ReadHoldingRawAsync((ushort)start, (ushort)count, ct);
+    var rows = regs.Select((v, i) => new { reg = start + i, hex = $"0x{v:X4}", dec = v });
+    return Results.Json(rows);
+});
+
+// Program a grid-charge window into the Economic-mode schedule (PV+GRID). Times
+// as HH:mm; soc is the charge-stop percentage. Economic mode must be active for
+// the inverter to act on it. e.g. POST /api/charge-window?start=02:00&end=05:00&soc=90
+app.MapPost("/api/charge-window", async (string start, string end, double soc, ISolintegClient inv, SystemState s, CancellationToken ct) =>
+{
+    if (!TimeOnly.TryParse(start, out var t0) || !TimeOnly.TryParse(end, out var t1))
+        return Results.BadRequest(new { error = "start/end must be HH:mm" });
+    if (soc is < 0 or > 100) return Results.BadRequest(new { error = "soc 0..100" });
+    await inv.WriteChargeWindowAsync(t0, t1, soc, ct);
+    s.LogAction($"Grid-charge window set {t0:HH\\:mm}-{t1:HH\\:mm} to {soc:F0}%");
+    return Results.Ok(new { start = t0.ToString("HH\\:mm"), end = t1.ToString("HH\\:mm"), soc });
+});
+
+// Clear the charge window back to empty.
+app.MapPost("/api/charge-window/clear", async (ISolintegClient inv, SystemState s, CancellationToken ct) =>
+{
+    await inv.ClearChargeWindowAsync(ct);
+    s.LogAction("Grid-charge window cleared");
+    return Results.Ok(new { cleared = true });
+});
+
 // One-time OAuth consent to the Tibber Data API (car battery SoC).
 // Open /tibber/connect in a browser; Tibber redirects back to /tibber/callback.
 app.MapGet("/tibber/connect", (HttpRequest req, ITibberVehicleClient vehicles) =>
