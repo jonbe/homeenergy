@@ -13,6 +13,12 @@ services:
       - TZ=Europe/Stockholm
       - HomeEnergy__DataDir=/data
       - HomeEnergy__AutomationEnabled=true
+      # Inverter address on the local network (override per deployment; the
+      # image default in appsettings.json is only a fallback).
+      - HomeEnergy__Inverter__Ip=${INVERTER_IP}
+      # Shared secret that gates the dashboard + control endpoints. Leave the
+      # .env value empty to disable auth (not recommended off localhost).
+      - HomeEnergy__AuthToken=${APP_AUTH_TOKEN}
       # Secrets — set these on the NAS (Container Manager env, or a .env file
       # next to this compose). Do NOT commit real values.
       - TIBBER_TOKEN=${TIBBER_TOKEN}

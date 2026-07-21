@@ -58,7 +58,7 @@ public class PollService : BackgroundService
         var charging = await _chargeAmps.GetStatusAsync(ct);
         if (charging is not null) _state.Charging = charging;
 
-        if (_opt.AutomationEnabled && charging is not null && stats is not null)
+        if (_opt.AutomationEnabled && _state.AutomationActive && charging is not null && stats is not null)
             await ApplyAutomation(charging, stats, ct);
 
         if (stats is not null)

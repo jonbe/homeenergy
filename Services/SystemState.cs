@@ -5,6 +5,11 @@ namespace HomeEnergy.Services;
 /// <summary>Thread-safe holder for the latest snapshot from each subsystem.</summary>
 public class SystemState
 {
+    /// <summary>Runtime automation on/off, toggled from the UI. Only takes
+    /// effect while <c>AppOptions.AutomationEnabled</c> also permits it; defaults
+    /// on so an enabled config behaves as before.</summary>
+    public volatile bool AutomationActive = true;
+
     public volatile InverterStats? Inverter;
     public volatile PriceSnapshot? Prices;
     public volatile ProductionSnapshot? Production;   // Tibber-reported, for comparison

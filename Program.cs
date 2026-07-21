@@ -1,6 +1,9 @@
+using System.Security.Cryptography;
+using System.Text;
 using HomeEnergy.Configuration;
 using HomeEnergy.Models;
 using HomeEnergy.Services;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -27,15 +30,25 @@ var app = builder.Build();
 
 app.Services.GetRequiredService<IHistoryStore>().Init();
 
+// Shared-secret gate. Disabled when no token is configured (local dev). Guards
+// the dashboard and every API/control endpoint; the Tibber OAuth callback is
+// exempt since Tibber's redirect can't carry our token (its unguessable state
+// parameter authenticates it instead).
+var authToken = app.Services.GetRequiredService<IOptions<AppOptions>>().Value.AuthToken;
+if (!string.IsNullOrEmpty(authToken))
+    app.Use((ctx, next) => AuthGate(ctx, next, authToken));
+
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
 // Aggregate status for the dashboard.
-app.MapGet("/api/status", (SystemState s, IPlanService planner, IHistoryStore history, ITibberVehicleClient tibber) =>
+app.MapGet("/api/status", (SystemState s, IPlanService planner, IHistoryStore history,
+    ITibberVehicleClient tibber, IOptions<AppOptions> opt) =>
 {
     var hist = history.TodayHourly();
     return Results.Json(new
     {
+        automation = new { allowed = opt.Value.AutomationEnabled, on = s.AutomationActive },
         inverter = s.Inverter,
         prices = CurrentPrice(s.Prices),
         export = Export(history.TodayExport(), s.Prices?.Currency ?? ""),   // calculated from minute history
@@ -50,6 +63,17 @@ app.MapGet("/api/status", (SystemState s, IPlanService planner, IHistoryStore hi
         actions = s.RecentActions(5),
         serverTime = DateTimeOffset.Now,
     });
+});
+
+// Turn runtime automation on/off. Only permitted while the config master
+// (AutomationEnabled) allows it; otherwise the setting is fixed off.
+app.MapPost("/api/automation/{on:bool}", (bool on, SystemState s, IOptions<AppOptions> opt) =>
+{
+    if (!opt.Value.AutomationEnabled)
+        return Results.Conflict(new { error = "automation disabled in config" });
+    s.AutomationActive = on;
+    s.LogAction($"Automation turned {(on ? "on" : "off")}");
+    return Results.Ok(new { on });
 });
 
 // Hourly history for a specific local date (YYYY-MM-DD), for the day-navigable
@@ -121,5 +145,73 @@ static PriceSnapshot? CurrentPrice(PriceSnapshot? p)
 
 static ProductionSnapshot Export(ExportTotals t, string currency) =>
     new(t.Kwh, t.Value, currency, DateTimeOffset.Now);
+
+// Middleware: allow the request through only if it carries the shared secret
+// (header, cookie, or one-time ?key= query). A matching query sets the cookie
+// so subsequent requests — including the dashboard's fetch() calls — carry it
+// automatically. Browsers hitting a page without it get a small login form.
+static async Task AuthGate(HttpContext ctx, Func<Task> next, string token)
+{
+    const string cookie = "he_auth";
+    var path = ctx.Request.Path;
+
+    // Tibber's OAuth redirect can't include our token; its state param guards it.
+    if (path.StartsWithSegments("/tibber/callback"))
+    {
+        await next();
+        return;
+    }
+
+    string? fromQuery = ctx.Request.Query["key"];
+    string? provided = ctx.Request.Headers["X-Api-Key"].FirstOrDefault()
+        ?? ctx.Request.Cookies[cookie]
+        ?? fromQuery;
+
+    if (provided is not null && Matches(provided, token))
+    {
+        if (fromQuery is not null)
+        {
+            ctx.Response.Cookies.Append(cookie, token, new CookieOptions
+            {
+                HttpOnly = true,
+                SameSite = SameSiteMode.Lax,
+                Secure = ctx.Request.IsHttps,
+                MaxAge = TimeSpan.FromDays(30),
+            });
+            // Strip ?key= from the address bar after a successful GET login.
+            if (HttpMethods.IsGet(ctx.Request.Method))
+            {
+                ctx.Response.Redirect(path.HasValue ? path.Value : "/");
+                return;
+            }
+        }
+        await next();
+        return;
+    }
+
+    ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
+    var wantsHtml = ctx.Request.Headers.Accept.ToString().Contains("text/html");
+    if (wantsHtml && !path.StartsWithSegments("/api"))
+    {
+        ctx.Response.ContentType = "text/html; charset=utf-8";
+        await ctx.Response.WriteAsync(
+            "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
+            + "<title>HomeEnergy — sign in</title>"
+            + "<body style='background:#111;color:#eee;font-family:system-ui;display:grid;place-items:center;height:100vh;margin:0'>"
+            + "<form method=get style='display:flex;gap:.5rem'>"
+            + "<input name=key type=password placeholder='Access token' autofocus "
+            + "style='padding:.5rem;border-radius:6px;border:1px solid #386;background:#222;color:#eee'>"
+            + "<button style='padding:.5rem .9rem;border-radius:6px;border:1px solid #386;background:#264;color:#eee;cursor:pointer'>Enter</button>"
+            + "</form>");
+    }
+    else
+    {
+        await ctx.Response.WriteAsJsonAsync(new { error = "unauthorized" });
+    }
+
+    static bool Matches(string a, string b) =>
+        CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(a), Encoding.UTF8.GetBytes(b));
+}
 
 app.Run();

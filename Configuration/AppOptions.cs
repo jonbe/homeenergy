@@ -17,4 +17,10 @@ public class AppOptions
     /// container set this to /data, a bind-mounted volume, so the data survives
     /// image updates.</summary>
     public string DataDir { get; set; } = "";
+
+    /// <summary>Shared secret that gates the whole app (dashboard + control
+    /// endpoints). Empty = auth disabled (local dev). When set, requests must
+    /// present it via the <c>he_auth</c> cookie, an <c>X-Api-Key</c> header, or
+    /// a one-time <c>?key=</c> query that then sets the cookie.</summary>
+    public string AuthToken { get; set; } = "";
 }
