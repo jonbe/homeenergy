@@ -21,6 +21,7 @@ public class SolintegClient : ISolintegClient
     public const ushort ModeRegister = 50000;
     public const ushort ModePvCharging = 0x0400;
     public const ushort ModeGeneral = 0x0101;
+    public const ushort ModeEconomic = 0x0102;  // time-of-use battery mode (grid-charge on cheap hours)
     public const ushort ModeFeedIn = 0x0105;
     public const ushort ModeBackup = 0x0103;   // reserves the battery (no discharge to loads)
 
