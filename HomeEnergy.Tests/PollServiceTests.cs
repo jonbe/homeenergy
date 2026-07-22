@@ -24,7 +24,7 @@ public class PollServiceTests
         var today = Enumerable.Range(0, 24)
             .Select(h => new PlanHour(h, h == now ? action : "idle", 1, 0.5))
             .ToList();
-        return new PlanSnapshot(19.2, 0, false, 0, "", today, today, DateTimeOffset.Now);
+        return new PlanSnapshot(19.2, 0, false, 0, "", today, false, 0, today, DateTimeOffset.Now);
     }
 
     private static PollService Build(FakeSolintegClient inv, FakeChargeAmpsClient ch,

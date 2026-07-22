@@ -7,5 +7,7 @@ public record PlanSnapshot(
     double PlannedGridChargeKwh,     // kWh we plan to pull from grid into the battery today
     string StrategyNote,             // short human summary of the chosen strategy
     IReadOnlyList<PlanHour> Today,
+    bool LowSunTomorrow,             // tomorrow's PV forecast is below the low-sun threshold
+    double PlannedGridChargeTomorrowKwh, // kWh we plan to grid-charge tomorrow
     IReadOnlyList<PlanHour> Tomorrow,
     DateTimeOffset FetchedAt);

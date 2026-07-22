@@ -195,8 +195,7 @@ public class PollService : BackgroundService
         "charge" => SolintegClient.ModePvCharging,
         "feedin" => SolintegClient.ModeFeedIn,
         "gridcharge" => SolintegClient.ModeEconomic,  // charge the battery from the cheap grid
-        "discharge" => SolintegClient.ModeGeneral,    // self-consume: battery covers the load
-        "idle" => SolintegClient.ModeGeneral,
+        "idle" => SolintegClient.ModeGeneral,         // self-consume: battery covers the load
         _ => null,
     };
 

@@ -63,11 +63,28 @@ public class PlanService : IPlanService
                 : $"Solar day ({solar.TodayKwh:F0} kWh) — charge from sun, export surplus";
         }
 
-        // Tomorrow: assume the battery drains overnight, so it must charge a full
-        // capacity from the coming day's sun. (Arbitrage for tomorrow is future work.)
-        var tomorrow = PlanDay(solar.TomorrowHourly, tomorrowPrices, cap, fromHour: 0);
+        // Tomorrow: if it's forecast low-sun and its prices are published, run the
+        // same arbitrage planner over tomorrow's day (battery assumed drained
+        // overnight, so available = 0). Otherwise assume it must charge a full
+        // capacity from the coming day's sun.
+        bool lowSunTomorrow = solar.TomorrowKwh <= _strat.LowSunKwh;
+        List<PlanHour> tomorrow;
+        double gridChargeTomorrowKwh = 0;
+        if (lowSunTomorrow && tomorrowPrices.Count > 0)
+        {
+            var arb = PlanArbitrage(solar.TomorrowHourly, tomorrowPrices,
+                new Dictionary<int, double>(), available: 0,
+                LoadKwhPerHour(now.AddDays(1).Month), currentHour: 0, solar.TomorrowKwh);
+            tomorrow = arb.Plan;
+            gridChargeTomorrowKwh = arb.GridChargeKwh;
+        }
+        else
+        {
+            tomorrow = PlanDay(solar.TomorrowHourly, tomorrowPrices, cap, fromHour: 0);
+        }
 
-        return new PlanSnapshot(cap, todayDeficit, lowSun, gridChargeKwh, note, today, tomorrow, now);
+        return new PlanSnapshot(cap, todayDeficit, lowSun, gridChargeKwh, note, today,
+            lowSunTomorrow, gridChargeTomorrowKwh, tomorrow, now);
     }
 
     // Summer (Apr–Sep) draws little; winter far more. A rough per-hour average
@@ -111,7 +128,7 @@ public class PlanService : IPlanService
 
         // Prices too flat to beat the round-trip loss: just ride on battery.
         if (minP <= 0 || (maxP - minP) / minP * 100 < gap)
-            return (FlatPlan(pv, todayPrices, currentHour, "discharge"),
+            return (FlatPlan(pv, todayPrices, currentHour, "idle"),
                 0, $"Low sun ({forecastKwh:F0} kWh); prices flat (<{gap:F0}% spread) — running on battery");
 
         // We recharge at the cheapest upcoming hour; the battery must carry the
@@ -138,11 +155,6 @@ public class PlanService : IPlanService
             if (s.Today) chargeToday[s.Hour] = add;
         }
 
-        // Expensive hours we still hold for (ride on battery instead of importing).
-        var dischargeToday = horizon
-            .Where(s => s.Today && !chargeToday.ContainsKey(s.Hour) && s.Price >= minP * loss)
-            .Select(s => s.Hour).ToHashSet();
-
         var plan = new List<PlanHour>();
         for (int hr = 0; hr < 24; hr++)
         {
@@ -151,7 +163,6 @@ public class PlanService : IPlanService
             string action =
                 hr < currentHour ? "idle" :
                 chargeToday.ContainsKey(hr) ? "gridcharge" :
-                dischargeToday.Contains(hr) ? "discharge" :
                 kw >= GeneralBelowKw ? "charge" : "idle";
             plan.Add(new PlanHour(hr, action, kw, price));
         }

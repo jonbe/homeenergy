@@ -44,7 +44,6 @@
   .slot.idle, .slot.general { background:#345; }
   .slot.backup { background:#e33; }
   .slot.gridcharge { background:#39f; }
-  .slot.discharge { background:#a7f; }
   .slot.now { outline:2px solid #8ab4f8; outline-offset:-1px; }
   .legend { display:flex; gap:1rem; font-size:.7rem; color:#aaa; margin:.5rem 0 .1rem; flex-wrap:wrap; }
   .legend.below { margin:.4rem 0 0; justify-content:center; }
@@ -56,7 +55,6 @@
   .legend .c-general::before { background:#345; }
   .legend .c-backup::before { background:#e33; }
   .legend .c-gridcharge::before { background:#39f; }
-  .legend .c-discharge::before { background:#a7f; }
   .legend .c-pv::before { background:#ffd23f; }
   .legend .c-load::before { background:#ff5c8a; }
   .legend .c-grid::before { background:#b197fc; }
@@ -173,7 +171,7 @@ function historyStrip(rows, nowHour) {
 // Suggested-plan strip: one cell per hour 0..23, coloured by action.
 function planStrip(rows, nowHour) {
   if (!rows || !rows.length) return '<div class="muted">not available yet</div>';
-  const label = a => ({charge:'charge battery',feedin:'feed in (export)',idle:'general mode',gridcharge:'grid-charge (cheap)',discharge:'run on battery (expensive)'})[a]||a;
+  const label = a => ({charge:'charge battery',feedin:'feed in (export)',idle:'general mode',gridcharge:'grid-charge (cheap)'})[a]||a;
   return '<div class="plan">' + rows.map(r=>{
     const now = r.hour===nowHour ? ' now' : '';
     const price = r.priceHourly==null ? '' : ' · '+f(r.priceHourly,2);
@@ -419,13 +417,16 @@ async function load() {
   // Suggested plan (charge vs feed-in across the day)
   if (pl) {
     const nowHour = new Date(d.serverTime).getHours();
-    const arbChips = pl.lowSunDay ? `<span class="c-gridcharge">grid-charge</span><span class="c-discharge">on battery</span>` : '';
+    const arbChips = (pl.lowSunDay || pl.lowSunTomorrow) ? `<span class="c-gridcharge">grid-charge</span>` : '';
     const legend = `<div class="legend"><span class="c-charge">charge</span><span class="c-feedin">feed-in</span>${arbChips}<span class="c-general">general</span><span class="c-backup">car charging</span></div>`;
     const grid = pl.plannedGridChargeKwh > 0
       ? `<div class="row"><span>Grid charge</span><span>${f(pl.plannedGridChargeKwh)} kWh planned</span></div>` : '';
+    const gridTom = pl.plannedGridChargeTomorrowKwh > 0
+      ? `<div class="row"><span>Grid charge tomorrow</span><span>${f(pl.plannedGridChargeTomorrowKwh)} kWh planned</span></div>` : '';
     cards.push(`<div class="card"><h2>Suggested plan</h2>
       <div class="row"><span>Battery</span><span>${f(inv?.batterySoc)}% · need ${f(pl.todayDeficitKwh)} kWh to full (${f(pl.batteryCapacityKwh,0)} kWh)</span></div>
       ${grid}
+      ${gridTom}
       ${pl.strategyNote ? `<div class="muted" style="margin:2px 0 6px">${pl.strategyNote}</div>` : ''}
       ${legend}
       ${rowLabel('actual today', null, null, '')}${historyStrip(d.history, nowHour)}${hourAxis()}
