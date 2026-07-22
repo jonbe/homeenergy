@@ -18,6 +18,16 @@ public class SystemState
     public volatile VehicleSnapshot? Vehicles;
     public volatile ChargerSnapshot? Chargers;
 
+    // When set, a user-triggered grid-charge is running until this time; once
+    // it passes PollService clears the window and reverts the inverter to
+    // General. Stored as UTC ticks (0 = none) for lock-free access.
+    private long _manualChargeUntilTicks;
+    public DateTimeOffset? ManualChargeUntil
+    {
+        get { var t = Interlocked.Read(ref _manualChargeUntilTicks); return t == 0 ? null : new DateTimeOffset(t, TimeSpan.Zero); }
+        set => Interlocked.Exchange(ref _manualChargeUntilTicks, value?.UtcTicks ?? 0);
+    }
+
     // Bounded history of automation/manual actions, newest first (for the UI).
     private const int MaxActions = 20;
     private readonly object _actionLock = new();

@@ -62,11 +62,30 @@ public class PollService : BackgroundService
         var charging = await _chargeAmps.GetStatusAsync(ct);
         if (charging is not null) _state.Charging = charging;
 
-        if (_opt.AutomationEnabled && _state.AutomationActive && charging is not null && stats is not null)
+        await MaybeRevertManualCharge(ct);
+
+        // A running manual grid-charge takes precedence — don't let automation
+        // rewrite the window or mode out from under it.
+        if (_state.ManualChargeUntil is null &&
+            _opt.AutomationEnabled && _state.AutomationActive && charging is not null && stats is not null)
             await ApplyAutomation(charging, stats, ct);
 
         if (stats is not null)
             await LogHistory(stats, ct);
+    }
+
+    // End a user-triggered grid-charge once its hour is up: clear the window and
+    // put the inverter back to General. Runs regardless of the automation flag.
+    private async Task MaybeRevertManualCharge(CancellationToken ct)
+    {
+        var until = _state.ManualChargeUntil;
+        if (until is null || DateTimeOffset.Now < until) return;
+
+        await _inverter.ClearChargeWindowAsync(ct);
+        await _inverter.WriteModeAsync(SolintegClient.ModeGeneral, ct);
+        _state.ManualChargeUntil = null;
+        _chargeWindow = null;
+        SetAction("Manual grid-charge ended -> General");
     }
 
     private async Task LogHistory(InverterStats stats, CancellationToken ct)

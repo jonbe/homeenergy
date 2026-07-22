@@ -117,6 +117,23 @@ app.MapPost("/api/charge-window", async (string start, string end, double soc, I
     return Results.Ok(new { start = t0.ToString("HH\\:mm"), end = t1.ToString("HH\\:mm"), soc });
 });
 
+// Manually grid-charge the battery for the next hour: program a one-hour window
+// from now, switch to Economic, and remember to revert to General once it
+// passes (PollService handles the revert each cycle). Bound to the "Battery"
+// button in the inverter card.
+app.MapPost("/api/charge-now", async (ISolintegClient inv, SystemState s, CancellationToken ct) =>
+{
+    var now = DateTimeOffset.Now;
+    var end = now.AddHours(1);
+    var start = TimeOnly.FromDateTime(now.DateTime);
+    var stop = end.Date == now.Date ? TimeOnly.FromDateTime(end.DateTime) : new TimeOnly(23, 59);
+    await inv.WriteChargeWindowAsync(start, stop, 100, ct);
+    await inv.WriteModeAsync(SolintegClient.ModeEconomic, ct);
+    s.ManualChargeUntil = end;
+    s.LogAction($"Manual grid-charge {start:HH\\:mm}-{stop:HH\\:mm} — reverts to General after");
+    return Results.Ok(new { start = start.ToString("HH\\:mm"), end = stop.ToString("HH\\:mm") });
+});
+
 // Clear the charge window back to empty.
 app.MapPost("/api/charge-window/clear", async (ISolintegClient inv, SystemState s, CancellationToken ct) =>
 {
