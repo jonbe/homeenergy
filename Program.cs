@@ -41,6 +41,14 @@ if (!string.IsNullOrEmpty(authToken))
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
+// Build identity, baked into the image at build time (see Dockerfile /
+// docker-publish.yml). Falls back to "dev" for local runs.
+var build = new
+{
+    sha = Environment.GetEnvironmentVariable("BUILD_SHA") ?? "dev",
+    time = Environment.GetEnvironmentVariable("BUILD_TIME") ?? "",
+};
+
 // Aggregate status for the dashboard.
 app.MapGet("/api/status", (SystemState s, IPlanService planner, IHistoryStore history,
     ITibberVehicleClient tibber, IOptions<AppOptions> opt) =>
@@ -48,6 +56,7 @@ app.MapGet("/api/status", (SystemState s, IPlanService planner, IHistoryStore hi
     var hist = history.TodayHourly();
     return Results.Json(new
     {
+        build,
         automation = new { allowed = opt.Value.AutomationEnabled, on = s.AutomationActive },
         inverter = s.Inverter,
         prices = CurrentPrice(s.Prices),
