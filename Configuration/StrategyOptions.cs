@@ -7,7 +7,7 @@ public class StrategyOptions
 {
     /// <summary>Forecast PV for the day (kWh) at or below which we treat it as a
     /// low-sun day and switch from the solar plan to price arbitrage.</summary>
-    public double LowSunKwh { get; set; } = 15;
+    public double LowSunKwh { get; set; } = 25;
 
     /// <summary>Rough average house load (kWh per hour), used to size how much
     /// energy must carry us to the next cheap window. Summer is low; winter far
