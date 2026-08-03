@@ -40,6 +40,11 @@ public class SolintegClient : ISolintegClient
     // can restore the user's setting when leaving Backup. Null = no cap active.
     private ushort? _savedMaxChargeSoc;
 
+    // The inverter's Modbus TCP server accepts only one client at a time, so all
+    // access is serialized through this gate. Overlapping connections (poll vs.
+    // forecast vs. a UI write) otherwise make the device drop one mid-read.
+    private readonly SemaphoreSlim _gate = new(1, 1);
+
     private static readonly Dictionary<int, string> ModeLabels = new()
     {
         [0x0101] = "General",
@@ -59,109 +64,99 @@ public class SolintegClient : ISolintegClient
 
     public async Task<InverterStats?> ReadStatsAsync(CancellationToken ct)
     {
-        try
+        for (int attempt = 1; ; attempt++)
         {
-            using var sock = new TcpClient();
-            await sock.ConnectAsync(_opt.Ip, _opt.Port, ct);
-            sock.ReceiveTimeout = 6000;
-            var stream = sock.GetStream();
+            try
+            {
+                return await WithConnection(async stream =>
+                {
+                    double pv = await ReadU32(stream, 11028, ct);
+                    double pv1 = await ReadU32(stream, 11062, ct);
+                    double pv2 = await ReadU32(stream, 11064, ct);
+                    double ac = await ReadS32(stream, 11016, ct);
+                    // Register 11000 reports + when exporting; negate so the field
+                    // follows the app convention (+ import, - export / feed-in).
+                    double grid = -await ReadS32(stream, 11000, ct);
+                    // Register 30258 reports + when discharging; negate so the field
+                    // follows the app convention (+ charging, - discharging).
+                    double batt = -await ReadS32(stream, 30258, ct);
+                    double soc = await ReadU16(stream, 33000, ct) * 0.01;
+                    double gen = await ReadU16(stream, 31005, ct) * 0.1;
+                    int mode = await ReadU16(stream, ModeRegister, ct);
+                    double load = pv + grid - batt;   // house consumption (energy balance)
 
-            double pv = await ReadU32(stream, 11028, ct);
-            double pv1 = await ReadU32(stream, 11062, ct);
-            double pv2 = await ReadU32(stream, 11064, ct);
-            double ac = await ReadS32(stream, 11016, ct);
-            // Register 11000 reports + when exporting; negate so the field
-            // follows the app convention (+ import, - export / feed-in).
-            double grid = -await ReadS32(stream, 11000, ct);
-            // Register 30258 reports + when discharging; negate so the field
-            // follows the app convention (+ charging, - discharging).
-            double batt = -await ReadS32(stream, 30258, ct);
-            double soc = await ReadU16(stream, 33000, ct) * 0.01;
-            double gen = await ReadU16(stream, 31005, ct) * 0.1;
-            int mode = await ReadU16(stream, ModeRegister, ct);
-            double load = pv + grid - batt;   // house consumption (energy balance)
-
-            return new InverterStats(pv, pv1, pv2, ac, grid, batt, load, soc, gen,
-                $"0x{mode:X4}",
-                ModeLabels.GetValueOrDefault(mode, $"Unknown(0x{mode:X4})"),
-                DateTimeOffset.Now);
+                    return new InverterStats(pv, pv1, pv2, ac, grid, batt, load, soc, gen,
+                        $"0x{mode:X4}",
+                        ModeLabels.GetValueOrDefault(mode, $"Unknown(0x{mode:X4})"),
+                        DateTimeOffset.Now);
+                }, ct);
+            }
+            // The device occasionally drops a connection mid-read; one quick
+            // retry clears it without surfacing a warning.
+            catch (Exception ex) when (attempt < 2 && ex is IOException or SocketException)
+            {
+                _log.LogDebug(ex, "Solinteg read attempt {Attempt} failed, retrying", attempt);
+                await Task.Delay(250, ct);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "Solinteg read failed");
+                return null;
+            }
         }
-        catch (Exception ex)
+    }
+
+    public Task<ushort[]> ReadHoldingRawAsync(ushort start, ushort count, CancellationToken ct) =>
+        WithConnection(async stream =>
         {
-            _log.LogWarning(ex, "Solinteg read failed");
-            return null;
-        }
-    }
+            var bytes = await ReadHolding(stream, start, count, ct);
+            var regs = new ushort[count];
+            for (int i = 0; i < count; i++)
+                regs[i] = BinaryPrimitives.ReadUInt16BigEndian(bytes.AsSpan(i * 2));
+            return regs;
+        }, ct);
 
-    public async Task<ushort[]> ReadHoldingRawAsync(ushort start, ushort count, CancellationToken ct)
-    {
-        using var sock = new TcpClient();
-        await sock.ConnectAsync(_opt.Ip, _opt.Port, ct);
-        sock.ReceiveTimeout = 6000;
-        var bytes = await ReadHolding(sock.GetStream(), start, count, ct);
-        var regs = new ushort[count];
-        for (int i = 0; i < count; i++)
-            regs[i] = BinaryPrimitives.ReadUInt16BigEndian(bytes.AsSpan(i * 2));
-        return regs;
-    }
+    public Task<double> ReadGenTodayKwhAsync(CancellationToken ct) =>
+        WithConnection(async stream => await ReadU16(stream, 31005, ct) * 0.1, ct);
 
-    public async Task<double> ReadGenTodayKwhAsync(CancellationToken ct)
-    {
-        using var sock = new TcpClient();
-        await sock.ConnectAsync(_opt.Ip, _opt.Port, ct);
-        sock.ReceiveTimeout = 6000;
-        return await ReadU16(sock.GetStream(), 31005, ct) * 0.1;
-    }
+    public Task WriteModeAsync(ushort value, CancellationToken ct) =>
+        WithConnection(async stream =>
+        {
+            // Entering Backup pins the charge ceiling at the current SOC so the house
+            // battery holds instead of topping up; leaving Backup restores the setting.
+            if (value == ModeBackup)
+                await CapMaxChargeToCurrentSocAsync(stream, ct);
+            else
+                await RestoreMaxChargeAsync(stream, ct);
 
-    public async Task WriteModeAsync(ushort value, CancellationToken ct)
-    {
-        using var sock = new TcpClient();
-        await sock.ConnectAsync(_opt.Ip, _opt.Port, ct);
-        sock.ReceiveTimeout = 6000;
-        var stream = sock.GetStream();
-
-        // Entering Backup pins the charge ceiling at the current SOC so the house
-        // battery holds instead of topping up; leaving Backup restores the setting.
-        if (value == ModeBackup)
-            await CapMaxChargeToCurrentSocAsync(stream, ct);
-        else
-            await RestoreMaxChargeAsync(stream, ct);
-
-        await WriteSingle(stream, ModeRegister, value, ct);
-        _log.LogInformation("Wrote mode 0x{Value:X4} to register {Reg}", value, ModeRegister);
-    }
+            await WriteSingle(stream, ModeRegister, value, ct);
+            _log.LogInformation("Wrote mode 0x{Value:X4} to register {Reg}", value, ModeRegister);
+        }, ct);
 
     // Program a single grid-charge window into the Economic-mode schedule. Byte
     // layout mirrors the app's own record: three structural flags = 1 (charge +
     // include grid), two 0xFFFF power placeholders, target SOC at 0.1% scale, and
     // start/stop times packed as 0xHHMM. Economic mode (0x0102) must be active for
     // the inverter to act on it.
-    public async Task WriteChargeWindowAsync(TimeOnly start, TimeOnly end, double socPercent, CancellationToken ct)
-    {
-        using var sock = new TcpClient();
-        await sock.ConnectAsync(_opt.Ip, _opt.Port, ct);
-        sock.ReceiveTimeout = 6000;
-        var s = sock.GetStream();
+    public Task WriteChargeWindowAsync(TimeOnly start, TimeOnly end, double socPercent, CancellationToken ct) =>
+        WithConnection(async s =>
+        {
+            ushort soc = (ushort)Math.Clamp((int)Math.Round(socPercent * 10), 0, 1000);
+            ushort[] record = { 1, 1, 1, 0xFFFF, soc, 0xFFFF, Hhmm(start), Hhmm(end) };
+            await WriteMultiple(s, ChargeWindowRegister, record, ct);
 
-        ushort soc = (ushort)Math.Clamp((int)Math.Round(socPercent * 10), 0, 1000);
-        ushort[] record = { 1, 1, 1, 0xFFFF, soc, 0xFFFF, Hhmm(start), Hhmm(end) };
-        await WriteMultiple(s, ChargeWindowRegister, record, ct);
-
-        _log.LogInformation("Wrote grid-charge window {Start:HH\\:mm}-{End:HH\\:mm} target {Soc:F0}%",
-            start, end, socPercent);
-    }
+            _log.LogInformation("Wrote grid-charge window {Start:HH\\:mm}-{End:HH\\:mm} target {Soc:F0}%",
+                start, end, socPercent);
+        }, ct);
 
     // Clear the first charge period back to all-zeros (the pristine empty state).
-    public async Task ClearChargeWindowAsync(CancellationToken ct)
-    {
-        using var sock = new TcpClient();
-        await sock.ConnectAsync(_opt.Ip, _opt.Port, ct);
-        sock.ReceiveTimeout = 6000;
-        var s = sock.GetStream();
-        await WriteMultiple(s, ChargeWindowRegister, new ushort[8], ct);
-        _log.LogInformation("Cleared grid-charge window (reg {Reg}..{End})",
-            ChargeWindowRegister, ChargeWindowRegister + 7);
-    }
+    public Task ClearChargeWindowAsync(CancellationToken ct) =>
+        WithConnection(async s =>
+        {
+            await WriteMultiple(s, ChargeWindowRegister, new ushort[8], ct);
+            _log.LogInformation("Cleared grid-charge window (reg {Reg}..{End})",
+                ChargeWindowRegister, ChargeWindowRegister + 7);
+        }, ct);
 
     private static ushort Hhmm(TimeOnly t) => (ushort)((t.Hour << 8) | t.Minute);
 
@@ -191,6 +186,26 @@ public class SolintegClient : ISolintegClient
 
     public static string ModeLabel(int value) =>
         ModeLabels.GetValueOrDefault(value, $"Unknown(0x{value:X4})");
+
+    // ---- Connection handling ----
+    // Serialize every conversation through a single connection: the device only
+    // tolerates one client at a time. The gate ensures poll/forecast/UI callers
+    // never open overlapping sockets.
+    private async Task<T> WithConnection<T>(Func<NetworkStream, Task<T>> op, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            using var sock = new TcpClient();
+            await sock.ConnectAsync(_opt.Ip, _opt.Port, ct);
+            sock.ReceiveTimeout = 6000;
+            return await op(sock.GetStream());
+        }
+        finally { _gate.Release(); }
+    }
+
+    private Task WithConnection(Func<NetworkStream, Task> op, CancellationToken ct) =>
+        WithConnection<object?>(async s => { await op(s); return null; }, ct);
 
     // ---- Modbus primitives ----
     private async Task<byte[]> ReadHolding(NetworkStream s, ushort addr, ushort count, CancellationToken ct)
