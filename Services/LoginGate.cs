@@ -21,7 +21,13 @@ public sealed class LoginGate
 
     // Ticket format inside the protected cookie. Bump the version to invalidate
     // every outstanding session at once.
-    private const string TicketVersion = "1";
+    private const string TicketVersion = "2";
+
+    // A fingerprint of the password rides inside every ticket, so changing the
+    // password signs every browser out: a rotation after a suspected leak would
+    // otherwise leave the leaked session valid for the rest of its 30 days. It
+    // is a truncated hash inside an encrypted cookie, never the password itself.
+    private readonly string _passwordFingerprint;
 
     /// <summary>Below this the startup log warns; update.sh refuses to expose it.</summary>
     public const int MinPasswordLength = 12;
@@ -48,6 +54,7 @@ public sealed class LoginGate
     {
         _password = password;
         _protector = protection.CreateProtector("HomeEnergy.Session");
+        _passwordFingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(password)), 0, 8);
         _clock = clock;
         _wrongPasswordDelay = wrongPasswordDelay ?? DefaultWrongPasswordDelay;
     }
@@ -110,7 +117,7 @@ public sealed class LoginGate
 
         _strikes.TryRemove(client, out _);
         var expires = now + SessionLifetime;
-        var ticket = _protector.Protect($"{TicketVersion}|{expires.ToUnixTimeSeconds()}");
+        var ticket = _protector.Protect($"{TicketVersion}|{expires.ToUnixTimeSeconds()}|{_passwordFingerprint}");
         ctx.Response.Cookies.Append(CookieName, ticket, new CookieOptions
         {
             HttpOnly = true,
@@ -155,8 +162,9 @@ public sealed class LoginGate
         try
         {
             var parts = _protector.Unprotect(cookie).Split('|');
-            return parts.Length == 2
+            return parts.Length == 3
                 && parts[0] == TicketVersion
+                && parts[2] == _passwordFingerprint
                 && long.TryParse(parts[1], out var exp)
                 && DateTimeOffset.FromUnixTimeSeconds(exp) > _clock.GetUtcNow();
         }

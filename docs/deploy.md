@@ -34,7 +34,11 @@ exposed; Cloudflare terminates https, so the NAS needs no certificate.
 1. **Set a long password first.** `APP_AUTH_TOKEN` in `.env`, at least 12
    characters (`update.sh` refuses to start the tunnel with less). It is entered
    once per browser; a 30-day encrypted session cookie follows. Wrong guesses
-   are slowed and locked out per address after 10 in 15 minutes.
+   are slowed and locked out per address after 10 in 15 minutes. Stick to
+   ASCII (the file may be edited from Windows, and compose's `.env` treats `$`
+   and an unquoted `#` specially). To change it later: edit `.env`, run
+   `update.sh`; every browser then signs in again, and any script sending the
+   old value as `X-Api-Key` must be updated.
 2. Cloudflare dashboard → **Zero Trust → Networks → Tunnels → Create a tunnel →
    Cloudflared**, name it, copy the **token** (the long string after `--token`).
 3. On the NAS, next to `docker-compose.yml`:
@@ -85,4 +89,5 @@ build's git sha, so you can see the new one landed.
 | Tunnel connected but the site shows a Cloudflare error (1033, 502, 530) | the Public Hostname is missing or wrong: it must point at HTTP `homeenergy:8080` |
 | The tunnel never connects | the NAS cannot reach Cloudflare; outbound port 7844 (tcp and udp) must be open |
 | Signed in on the LAN address but asked again on the public one | expected: the cookie is per hostname. Sign in once on each. |
+| Everyone is asked to sign in again | expected after changing `APP_AUTH_TOKEN`: a fingerprint of the password is part of every session, so a new password ends all sessions (that is the point of rotating it). Also after an app update that bumps the ticket version. |
 | `Too many attempts` on the login page | 10 wrong passwords from your address within 15 minutes; wait, or restart the container |

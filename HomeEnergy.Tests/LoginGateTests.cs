@@ -126,6 +126,22 @@ public class LoginGateTests
     }
 
     [Fact]
+    public async Task ChangingThePassword_SignsExistingSessionsOut()
+    {
+        var login = LoginPost(Password);
+        await Gate().InvokeAsync(login, () => Task.CompletedTask);
+        var cookie = IssuedCookie(login)!;
+
+        // Same key ring, new password: the old ticket must no longer open the door.
+        var rotated = new LoginGate("a different passphrase", _keys, new FixedClock(T0), TimeSpan.Zero);
+        var ctx = Request("GET", "/");
+        ctx.Request.Headers.Cookie = $"{LoginGate.CookieName}={cookie}";
+
+        Assert.False(await PassesGate(rotated, ctx));
+        Assert.Equal(401, ctx.Response.StatusCode);
+    }
+
+    [Fact]
     public async Task Session_ExpiresAfterItsLifetime()
     {
         var login = LoginPost(Password);
