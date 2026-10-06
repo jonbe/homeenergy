@@ -32,6 +32,9 @@ tibber_tokens.json
 # Max-charge SOC saved while Backup caps it (restored on leaving Backup)
 maxcharge_saved.txt
 
+# Data Protection master keys for login session cookies
+keys/
+
 # Local history database (SQLite)
 history.db
 history.db-wal

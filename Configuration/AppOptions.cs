@@ -19,9 +19,9 @@ public class AppOptions
     /// image updates.</summary>
     public string DataDir { get; set; } = "";
 
-    /// <summary>Shared secret that gates the whole app (dashboard + control
-    /// endpoints). Empty = auth disabled (local dev). When set, requests must
-    /// present it via the <c>he_auth</c> cookie, an <c>X-Api-Key</c> header, or
-    /// a one-time <c>?key=</c> query that then sets the cookie.</summary>
+    /// <summary>Password for the dashboard login screen, gating the whole app
+    /// (dashboard + control endpoints). Empty = auth disabled (local dev). A browser
+    /// enters it once and gets an encrypted 30-day session cookie; scripts may
+    /// send it as an <c>X-Api-Key</c> header instead. See <c>LoginGate</c>.</summary>
     public string AuthToken { get; set; } = "";
 }
