@@ -10,6 +10,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<AppOptions>(builder.Configuration.GetSection("HomeEnergy"));
 builder.Services.AddHttpClient();
 
+builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<SystemState>();
 builder.Services.AddSingleton<ISecretProvider, EnvironmentSecretProvider>();
 builder.Services.AddSingleton<ISolintegClient, SolintegClient>();

@@ -8,7 +8,8 @@ namespace HomeEnergy.Services;
 /// Every 60 s: read inverter stats + charging status. When automation is
 /// enabled it drives the inverter mode: a charging car forces Backup/UPS (which
 /// reserves the battery so it is not drained into the car); otherwise it follows
-/// the suggested plan for the current hour (charge / feed-in / general).
+/// the suggested plan for the current 15-minute slot (charge / feed-in / general /
+/// hold the battery / grid-charge).
 ///
 /// NOTE: writing the mode register conflicts with the Solinteg app/cloud
 /// schema. Automation is OFF by default (AutomationEnabled) — enable only if
@@ -133,39 +134,44 @@ public class PollService : BackgroundService
     }
 
     // A charging car forces Backup/UPS (reserves the battery); otherwise follow
-    // the plan's current hour. Returns (null, _) when there is no plan yet,
+    // the plan's current slot. Returns (null, _) when there is no plan yet,
     // meaning "leave the mode alone".
     private (ushort? mode, string reason) DesiredMode(ChargingSnapshot charging, PlanSnapshot? plan)
     {
         if (charging.AnyCharging)
             return (SolintegClient.ModeBackup, "Car charging");
 
-        var slot = plan?.Today.FirstOrDefault(h => h.Hour == DateTimeOffset.Now.Hour);
+        var slot = CurrentSlot(plan);
         return slot is null ? (null, "") : (ModeForAction(slot.Action), $"Plan ({slot.Action})");
     }
 
+    private static PlanSlot? CurrentSlot(PlanSnapshot? plan)
+    {
+        var now = DateTimeOffset.Now;
+        return plan?.Today.FirstOrDefault(s => s.Start <= now && now < s.End);
+    }
+
     // Program (or clear) the Economic-mode charge window to match the plan's run
-    // of consecutive "gridcharge" hours starting at the current hour. The window
-    // charges up to a stop-SOC sized from the plan's remaining grid-charge need.
+    // of consecutive "gridcharge" slots starting at the current slot. The window
+    // charges up to a stop-SOC sized from what that run is planned to store.
     private async Task SyncChargeWindow(PlanSnapshot plan, InverterStats stats, CancellationToken ct)
     {
-        var run = GridChargeRun(plan.Today, DateTimeOffset.Now.Hour);
-        if (run is not (int startHour, int endHour))
+        var run = GridChargeRun(plan.Today);
+        if (run is null)
         {
             if (_chargeWindow is not null) await ClearChargeWindow(ct);
             return;
         }
+        var (start, end, storedKwh) = run.Value;
 
-        var start = new TimeOnly(startHour, 0);
-        var end = endHour >= 24 ? new TimeOnly(23, 59) : new TimeOnly(endHour, 0);
-
-        // Same run already programmed — leave the frozen stop-SOC alone so a
-        // rising SOC doesn't cause a rewrite every minute.
-        if (_chargeWindow is { } w && w.Start == start && w.End == end) return;
+        // The same run is already programmed (the window start trails the current
+        // slot as the run progresses) — leave the frozen stop-SOC alone so we
+        // don't rewrite the window every quarter.
+        if (_chargeWindow is { } w && w.End == end && w.Start <= start) return;
 
         int soc = plan.BatteryCapacityKwh <= 0 ? 100
             : (int)Math.Round(Math.Clamp(
-                stats.BatterySoc + plan.PlannedGridChargeKwh / plan.BatteryCapacityKwh * 100, 0, 100));
+                stats.BatterySoc + storedKwh / plan.BatteryCapacityKwh * 100, 0, 100));
 
         await _inverter.WriteChargeWindowAsync(start, end, soc, ct);
         _chargeWindow = (start, end, soc);
@@ -179,15 +185,24 @@ public class PollService : BackgroundService
         SetAction("Grid-charge window cleared");
     }
 
-    // The block of consecutive "gridcharge" hours starting at the current hour,
-    // as (startHour, endHourExclusive), or null if now isn't a gridcharge hour.
-    private static (int Start, int End)? GridChargeRun(IReadOnlyList<PlanHour> today, int currentHour)
+    // The block of consecutive "gridcharge" slots starting at the current slot, as
+    // (start, end, kWh the run is planned to store), or null if now isn't one. A run
+    // that would cross midnight is cut at 23:59; the next day's plan picks it up.
+    private static (TimeOnly Start, TimeOnly End, double StoredKwh)? GridChargeRun(IReadOnlyList<PlanSlot> today)
     {
-        if (today.FirstOrDefault(h => h.Hour == currentHour)?.Action != "gridcharge")
-            return null;
-        int end = currentHour + 1;
-        while (today.FirstOrDefault(h => h.Hour == end)?.Action == "gridcharge") end++;
-        return (currentHour, end);
+        var now = DateTimeOffset.Now;
+        int i = today.ToList().FindIndex(s => s.Start <= now && now < s.End);
+        if (i < 0 || today[i].Action != "gridcharge") return null;
+
+        int j = i;
+        double stored = 0;
+        for (; j < today.Count && today[j].Action == "gridcharge"; j++)
+            stored += today[j].BatteryKwh;
+
+        var startLocal = today[i].Start.LocalDateTime;
+        var endLocal = today[j - 1].End.LocalDateTime;
+        var end = endLocal.Date == startLocal.Date ? TimeOnly.FromDateTime(endLocal) : new TimeOnly(23, 59);
+        return (TimeOnly.FromDateTime(startLocal), end, stored);
     }
 
     private static ushort? ModeForAction(string action) => action switch
@@ -195,6 +210,7 @@ public class PollService : BackgroundService
         "charge" => SolintegClient.ModePvCharging,
         "feedin" => SolintegClient.ModeFeedIn,
         "gridcharge" => SolintegClient.ModeEconomic,  // charge the battery from the cheap grid
+        "hold" => SolintegClient.ModeBackup,          // grid runs the house; battery kept for pricier slots
         "idle" => SolintegClient.ModeGeneral,         // self-consume: battery covers the load
         _ => null,
     };

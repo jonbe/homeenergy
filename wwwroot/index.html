@@ -44,8 +44,9 @@
   .slot.charge { background:#2f5; }
   .slot.feedin { background:#f95; }
   .slot.idle, .slot.general { background:#345; }
-  .slot.backup { background:#e33; }
+  .slot.backup, .slot.hold { background:#e33; }
   .slot.gridcharge { background:#39f; }
+  .slot.past { background:#1c1c1c; }
   .slot.now { outline:2px solid #8ab4f8; outline-offset:-1px; }
   .legend { display:flex; gap:1rem; font-size:.7rem; color:#aaa; margin:.5rem 0 .1rem; flex-wrap:wrap; }
   .legend.below { margin:.4rem 0 0; justify-content:center; }
@@ -146,8 +147,10 @@ function solarHourly(rows, max, nowHour) {
   }).join('') + '</div>';
 }
 
-// Display name: the Backup/UPS mode is what we use for car charging.
-const modeName = label => /backup|ups/i.test(label) ? 'Car Charging'
+// Display name: the Backup/UPS mode is what we use for car charging, and also
+// for holding the battery while the grid is cheaper than the battery's value.
+const modeName = (label, carCharging) => /backup|ups/i.test(label)
+  ? (carCharging ? 'Car Charging' : 'Hold battery')
   : /econ/i.test(label) ? 'Battery' : label;
 
 // Map an inverter mode label to the graph's colour classes.
@@ -173,14 +176,18 @@ function historyStrip(rows, nowHour) {
   }).join('') + '</div>';
 }
 
-// Suggested-plan strip: one cell per hour 0..23, coloured by action.
-function planStrip(rows, nowHour) {
+// Suggested-plan strip: one cell per 15-minute slot (96 a day), coloured by
+// action. nowMs marks the slot we're in; pass -1 for a day that isn't today.
+function planStrip(rows, nowMs) {
   if (!rows || !rows.length) return '<div class="muted">not available yet</div>';
-  const label = a => ({charge:'charge battery',feedin:'feed in (export)',idle:'general mode',gridcharge:'grid-charge (cheap)'})[a]||a;
+  const label = a => ({charge:'charge battery',feedin:'feed in (export)',idle:'general mode',
+    gridcharge:'grid-charge (cheap)',hold:'hold battery (grid runs the house)',past:'elapsed'})[a]||a;
   return '<div class="plan">' + rows.map(r=>{
-    const now = r.hour===nowHour ? ' now' : '';
-    const price = r.priceHourly==null ? '' : ' · '+f(r.priceHourly,2);
-    return `<div class="slot ${r.action}${now}" title="${String(r.hour).padStart(2,'0')}:00 ${label(r.action)} · ${f(r.estKw)} kW${price}"></div>`;
+    const t0 = Date.parse(r.start);
+    const now = nowMs >= t0 && nowMs < t0 + 15*60000 ? ' now' : '';
+    const price = r.price==null ? '' : ' · '+f(r.price,2);
+    const bat = Math.abs(r.batteryKwh) > 0.005 ? ` · battery ${r.batteryKwh>0?'+':''}${f(r.batteryKwh,2)} kWh` : '';
+    return `<div class="slot ${r.action}${now}" title="${time(r.start)} ${label(r.action)} · ${f(r.estKw)} kW PV${price}${bat}"></div>`;
   }).join('') + '</div>';
 }
 
@@ -331,7 +338,7 @@ async function load() {
       title="${au.allowed?('Automation '+(autoOn?'on — click to disable':'off — click to enable')):'Automation disabled in config'}"
       onclick="setAutomation(${!autoOn})">Auto ${autoOn?'ON':'OFF'}</button>`;
     cards.push(`<div class="card"><h2>Inverter${autoToggle}</h2>
-      <div class="row"><span>Mode</span><span class="mode ${modeClass(inv.modeLabel)}">${modeName(inv.modeLabel)}</span></div>
+      <div class="row"><span>Mode</span><span class="mode ${modeClass(inv.modeLabel)}">${modeName(inv.modeLabel, ch?.anyCharging)}</span></div>
       <div class="row"><span>Solar now</span><span>${kw(inv.pvPowerW)}</span></div>
       <div class="row"><span>Battery</span><span>${f(inv.batterySoc)}% · ${batFlow(inv.batteryPowerW)}</span></div>
       <div class="row"><span>Grid</span><span>${kw(inv.gridPowerW)}</span></div>
@@ -427,8 +434,8 @@ async function load() {
   // Suggested plan (charge vs feed-in across the day)
   if (pl) {
     const nowHour = new Date(d.serverTime).getHours();
-    const arbChips = (pl.lowSunDay || pl.lowSunTomorrow) ? `<span class="c-gridcharge">grid-charge</span>` : '';
-    const legend = `<div class="legend"><span class="c-charge">charge</span><span class="c-feedin">feed-in</span>${arbChips}<span class="c-general">general</span><span class="c-backup">car charging</span></div>`;
+    const nowMs = Date.parse(d.serverTime);
+    const legend = `<div class="legend"><span class="c-charge">charge</span><span class="c-feedin">feed-in</span><span class="c-gridcharge">grid-charge</span><span class="c-general">general</span><span class="c-backup">hold battery / car charging</span></div>`;
     const grid = pl.plannedGridChargeKwh > 0
       ? `<div class="row"><span>Grid charge</span><span>${f(pl.plannedGridChargeKwh)} kWh planned</span></div>` : '';
     const gridTom = pl.plannedGridChargeTomorrowKwh > 0
@@ -440,7 +447,7 @@ async function load() {
       ${pl.strategyNote ? `<div class="muted" style="margin:2px 0 6px">${pl.strategyNote}</div>` : ''}
       ${legend}
       ${rowLabel('actual today', null, null, '')}${historyStrip(d.history, nowHour)}${hourAxis()}
-      ${rowLabel('planned today', null, null, '')}${planStrip(pl.today, nowHour)}${hourAxis()}
+      ${rowLabel('planned today', null, null, '')}${planStrip(pl.today, nowMs)}${hourAxis()}
       ${rowLabel('planned tomorrow', null, null, '')}${planStrip(pl.tomorrow, -1)}${hourAxis()}</div>`);
   }
 

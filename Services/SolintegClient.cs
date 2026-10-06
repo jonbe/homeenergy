@@ -38,7 +38,10 @@ public class SolintegClient : ISolintegClient
 
     // Prior max-charge ceiling saved while a Backup-mode cap is in effect, so we
     // can restore the user's setting when leaving Backup. Null = no cap active.
+    // Mirrored to a file: the plan holds the battery in Backup for hours at a time,
+    // so a restart mid-hold must not forget the ceiling and leave it pinned.
     private ushort? _savedMaxChargeSoc;
+    private readonly string _savedCeilingPath;
 
     // The inverter's Modbus TCP server accepts only one client at a time, so all
     // access is serialized through this gate. Overlapping connections (poll vs.
@@ -56,10 +59,37 @@ public class SolintegClient : ISolintegClient
         [0x0400] = "PV-Charging",
     };
 
-    public SolintegClient(IOptions<AppOptions> opt, ILogger<SolintegClient> log)
+    public SolintegClient(IOptions<AppOptions> opt, IHostEnvironment env, ILogger<SolintegClient> log)
     {
         _opt = opt.Value.Inverter;
         _log = log;
+        _savedCeilingPath = DataPaths.Resolve(opt.Value, env.ContentRootPath, "maxcharge_saved.txt");
+        _savedMaxChargeSoc = LoadSavedCeiling();
+    }
+
+    private ushort? LoadSavedCeiling()
+    {
+        try
+        {
+            if (File.Exists(_savedCeilingPath) && ushort.TryParse(File.ReadAllText(_savedCeilingPath), out var v))
+            {
+                _log.LogInformation("Found saved max-charge SOC {Ceiling:F1}% from before restart; will restore on leaving Backup", v / 10.0);
+                return v;
+            }
+        }
+        catch (Exception ex) { _log.LogWarning(ex, "could not read saved max-charge SOC"); }
+        return null;
+    }
+
+    private void SaveCeiling(ushort? value)
+    {
+        _savedMaxChargeSoc = value;
+        try
+        {
+            if (value is { } v) File.WriteAllText(_savedCeilingPath, v.ToString());
+            else File.Delete(_savedCeilingPath);
+        }
+        catch (Exception ex) { _log.LogWarning(ex, "could not persist saved max-charge SOC"); }
     }
 
     public async Task<InverterStats?> ReadStatsAsync(CancellationToken ct)
@@ -170,7 +200,7 @@ public class SolintegClient : ISolintegClient
         var cap = (ushort)Math.Clamp((int)Math.Round(socRaw / 10.0), 0, prior);
         if (cap >= prior) return;   // already at/below current SOC; nothing to pin
 
-        _savedMaxChargeSoc = prior;
+        SaveCeiling(prior);
         await WriteSingle(s, MaxChargeSocRegister, cap, ct);
         _log.LogInformation("Pinned max-charge SOC to {Cap:F1}% (was {Prior:F1}%) for Backup",
             cap / 10.0, prior / 10.0);
@@ -179,8 +209,8 @@ public class SolintegClient : ISolintegClient
     private async Task RestoreMaxChargeAsync(NetworkStream s, CancellationToken ct)
     {
         if (_savedMaxChargeSoc is not { } prior) return;   // no cap active
-        _savedMaxChargeSoc = null;
         await WriteSingle(s, MaxChargeSocRegister, prior, ct);
+        SaveCeiling(null);
         _log.LogInformation("Restored max-charge SOC to {Prior:F1}%", prior / 10.0);
     }
 

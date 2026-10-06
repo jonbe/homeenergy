@@ -3,11 +3,9 @@ namespace HomeEnergy.Models;
 public record PlanSnapshot(
     double BatteryCapacityKwh,
     double TodayDeficitKwh,          // kWh of sun still needed to reach 100% today
-    bool LowSunDay,                  // today's PV forecast is below the low-sun threshold
     double PlannedGridChargeKwh,     // kWh we plan to pull from grid into the battery today
-    string StrategyNote,             // short human summary of the chosen strategy
-    IReadOnlyList<PlanHour> Today,
-    bool LowSunTomorrow,             // tomorrow's PV forecast is below the low-sun threshold
+    string StrategyNote,             // short human summary of what the plan does next
+    IReadOnlyList<PlanSlot> Today,   // every 15-min slot of today
     double PlannedGridChargeTomorrowKwh, // kWh we plan to grid-charge tomorrow
-    IReadOnlyList<PlanHour> Tomorrow,
+    IReadOnlyList<PlanSlot> Tomorrow,    // every slot of tomorrow; empty until its prices are published
     DateTimeOffset FetchedAt);

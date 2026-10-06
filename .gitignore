@@ -29,6 +29,9 @@ appsettings.*.local.json
 # Tibber Data API OAuth refresh token (persisted locally after consent)
 tibber_tokens.json
 
+# Max-charge SOC saved while Backup caps it (restored on leaving Backup)
+maxcharge_saved.txt
+
 # Local history database (SQLite)
 history.db
 history.db-wal

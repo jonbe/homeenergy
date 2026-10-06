@@ -17,14 +17,17 @@ public class PollServiceTests
     private static ChargingSnapshot Charging(bool anyCharging) => new(
         "test-cp", Array.Empty<ConnectorStatus>(), anyCharging, DateTimeOffset.Now);
 
-    // A plan whose current hour carries the given action (rest of the day idle).
+    // A plan whose current 15-minute slot carries the given action (rest of the day idle).
     private static PlanSnapshot PlanNow(string action)
     {
-        int now = DateTimeOffset.Now.Hour;
-        var today = Enumerable.Range(0, 24)
-            .Select(h => new PlanHour(h, h == now ? action : "idle", 1, 0.5))
+        var now = DateTimeOffset.Now;
+        var midnight = new DateTimeOffset(now.Date, now.Offset);
+        var today = Enumerable.Range(0, 96)
+            .Select(q => midnight.AddMinutes(q * PlanSlot.Minutes))
+            .Select(start => new PlanSlot(start,
+                start <= now && now < start.AddMinutes(PlanSlot.Minutes) ? action : "idle", 1, 0.5, 0))
             .ToList();
-        return new PlanSnapshot(19.2, 0, false, 0, "", today, false, 0, today, DateTimeOffset.Now);
+        return new PlanSnapshot(19.2, 0, 0, "", today, 0, today, now);
     }
 
     private static PollService Build(FakeSolintegClient inv, FakeChargeAmpsClient ch,
@@ -85,6 +88,19 @@ public class PollServiceTests
 
         Assert.Null(inv.LastModeWritten);
         Assert.Equal(0, inv.WriteCount);
+    }
+
+    [Fact]
+    public async Task PollOnce_HoldsBatteryInBackup_WhenPlanSaysHold()
+    {
+        var inv = new FakeSolintegClient { Stats = Stats(SolintegClient.ModeGeneral) };
+        var ch = new FakeChargeAmpsClient { Snapshot = Charging(anyCharging: false) };
+        var plan = new FakePlanService { Snapshot = PlanNow("hold") };
+        var state = new SystemState();
+
+        await Build(inv, ch, state, automation: true, plan).PollOnce(CancellationToken.None);
+
+        Assert.Equal(SolintegClient.ModeBackup, inv.LastModeWritten);
     }
 
     [Fact]
