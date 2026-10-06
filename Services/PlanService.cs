@@ -84,6 +84,8 @@ public class PlanService : IPlanService
             MaxGridChargeKw: _strat.MaxGridChargeKw,
             ExportFactor: _strat.ExportPriceFactor,
             WearPerKwh: _strat.BatteryWearPerKwh,
+            SwitchCost: _strat.ModeSwitchCost,
+            StartMode: CurrentMode(inverter),
             TerminalPrice: future.Count == 0 ? 0 : Math.Max(0, future.Average(t => t.Slot.Price)));
 
         // Without today's prices there is nothing to optimise against (and every price
@@ -116,6 +118,20 @@ public class PlanService : IPlanService
     // enough to size how much the battery has to carry.
     private double LoadKw(int month) =>
         month is >= 4 and <= 9 ? _strat.SummerLoadKwhPerHour : _strat.WinterLoadKwhPerHour;
+
+    // The battery behaviour the inverter is currently running, so that leaving it
+    // counts as a mode switch in the optimizer.
+    private static BatteryMode CurrentMode(InverterStats? inverter)
+    {
+        if (inverter is null || !int.TryParse(inverter.ModeRaw.AsSpan(2), System.Globalization.NumberStyles.HexNumber, null, out int mode))
+            return BatteryMode.Discharge;
+        return mode switch
+        {
+            SolintegClient.ModeBackup => BatteryMode.Hold,
+            SolintegClient.ModeEconomic => BatteryMode.GridCharge,
+            _ => BatteryMode.Discharge,
+        };
+    }
 
     // Price of the quarter containing `at`: the latest point that has started.
     // Works for hourly points too (each simply spans four slots).

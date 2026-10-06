@@ -26,6 +26,12 @@ public class StrategyOptions
     /// so it holds the battery for the slots that are really worth spending it on.</summary>
     public double BatteryWearPerKwh { get; set; } = 0.10;
 
+    /// <summary>Cost (in the price currency) attributed to each inverter mode change.
+    /// Every change is a handful of settings-register writes on the inverter, so a
+    /// change must save more than this to be made. Stops one-slot islands of a
+    /// different mode when neighbouring prices differ by a few öre.</summary>
+    public double ModeSwitchCost { get; set; } = 0.05;
+
     /// <summary>Rough fraction of the all-in import price you get paid when selling
     /// to the grid (the import price includes tax and fees that export doesn't).
     /// Low values make the optimizer prefer storing PV over exporting it.</summary>

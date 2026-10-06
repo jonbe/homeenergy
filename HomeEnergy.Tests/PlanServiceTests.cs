@@ -215,6 +215,74 @@ public class BatteryDispatchTests
     }
 
     [Fact]
+    public void DischargeCreditsOnlyWhatTheBatteryActuallyGave()
+    {
+        // 15 kWh usable at 93% leg efficiency delivers 13.95 kWh to a 1 kW house, not 15:
+        // the house gets eta × what the level dropped, never more.
+        var slots = Enumerable.Range(0, 96).Select(_ => Slot(3.0)).ToArray();
+
+        var plan = BatteryDispatch.Optimize(slots, Settings(startKwh: 15, maxGridKw: 0) with { TerminalPrice = 0 });
+
+        double delivered = plan.Sum(p => Math.Min(0.25, -p.BatteryKwh * 0.93));
+        Assert.Equal(-15, plan.Sum(p => p.BatteryKwh), 2);
+        Assert.InRange(delivered, 13.9, 14.0);
+    }
+
+    // Today's real hourly shape (SEK/kWh, 2026-10-06): free night, 1.35 spike at 08,
+    // cheap midday, 1.5–1.8 evening — with a few öre of quarter-to-quarter noise.
+    private static readonly double[] RealDay =
+        { 0.12, 0.12, 0.13, 0.12, 0.12, 0.13, 0.08, 0.12, 1.35, 0.22, 0.20, 0.17,
+          0.16, 0.16, 0.16, 0.21, 0.46, 1.44, 1.73, 1.67, 1.68, 1.78, 1.55, 1.53 };
+
+    private static DispatchSlot[] RealDaySlots(double loadKw) =>
+        Enumerable.Range(0, 96)
+            .Select(q => Slot(RealDay[q / 4] + (q % 3 - 1) * 0.01, loadKw: loadKw))
+            .ToArray();
+
+    [Theory]
+    [InlineData(1.0, 5.4)]
+    [InlineData(3.0, 5.4)]
+    [InlineData(3.0, 13.0)]
+    public void SwitchCost_RemovesOneSlotIslands(double loadKw, double startKwh)
+    {
+        var s = Settings(startKwh) with { SwitchCost = 0.05, TerminalPrice = RealDay.Average() };
+
+        var plan = BatteryDispatch.Optimize(RealDaySlots(loadKw), s);
+
+        var modes = plan.Select(p => p.Mode).ToArray();
+        for (int i = 1; i < modes.Length - 1; i++)
+            Assert.False(modes[i] != modes[i - 1] && modes[i] != modes[i + 1],
+                $"one-slot island of {modes[i]} at slot {i}");
+        int changes = modes.Zip(modes.Skip(1)).Count(x => x.First != x.Second);
+        Assert.InRange(changes, 1, 6);
+    }
+
+    [Fact]
+    public void SwitchCost_StillCatchesARealSpike()
+    {
+        // A one-quarter 5.0 spike against ~1 kWh of battery: worth two switches.
+        var slots = Enumerable.Range(0, 8).Select(q => Slot(q == 4 ? 5.0 : 0.1)).ToArray();
+
+        var plan = BatteryDispatch.Optimize(slots, Settings(startKwh: 0.3, maxGridKw: 0) with { SwitchCost = 0.05, TerminalPrice = 0 });
+
+        Assert.Equal(BatteryMode.Discharge, plan[4].Mode);
+        Assert.True(plan[4].BatteryKwh < 0);
+        Assert.All(plan.Take(4), p => Assert.Equal(BatteryMode.Hold, p.Mode));
+    }
+
+    [Fact]
+    public void StartMode_LeavingTheCurrentModeCountsAsASwitch()
+    {
+        // Flat prices: Hold and Discharge cost the same (nothing to gain either way), so
+        // an inverter already holding should keep holding rather than pay a switch.
+        var slots = Enumerable.Range(0, 4).Select(_ => Slot(1.0, loadKw: 0)).ToArray();
+
+        var plan = BatteryDispatch.Optimize(slots, Settings(startKwh: 5) with { SwitchCost = 0.05, StartMode = BatteryMode.Hold });
+
+        Assert.All(plan, p => Assert.Equal(BatteryMode.Hold, p.Mode));
+    }
+
+    [Fact]
     public void NeverPlansPastEmptyOrFull()
     {
         var slots = Enumerable.Range(0, 60).Select(i => Slot(i % 2 == 0 ? 0.1 : 3.0)).ToArray();
