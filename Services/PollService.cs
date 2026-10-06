@@ -58,7 +58,13 @@ public class PollService : BackgroundService
     internal async Task PollOnce(CancellationToken ct)
     {
         var stats = await _inverter.ReadStatsAsync(ct);
-        if (stats is not null) _state.Inverter = stats;
+        if (stats is not null)
+        {
+            _state.Inverter = stats;
+            // A ceiling pinned for a hold must not outlive the hold, however it ended.
+            if (await _inverter.ReleaseStaleChargeCapAsync(Convert.ToInt32(stats.ModeRaw, 16), ct))
+                SetAction("Restored max-charge SOC left pinned by an earlier hold");
+        }
 
         var charging = await _chargeAmps.GetStatusAsync(ct);
         if (charging is not null) _state.Charging = charging;

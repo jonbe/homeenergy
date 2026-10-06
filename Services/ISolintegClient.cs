@@ -8,6 +8,13 @@ public interface ISolintegClient
     Task<double> ReadGenTodayKwhAsync(CancellationToken ct);
     Task WriteModeAsync(ushort value, CancellationToken ct);
 
+    /// <summary>Entering Backup pins the max-charge SOC and leaving it through
+    /// <see cref="WriteModeAsync"/> restores it. If the inverter left Backup some
+    /// other way (a restart, the Solinteg app) the pin would stay forever; call this
+    /// with the mode just read to restore the ceiling in that case. Returns true if
+    /// it had to.</summary>
+    Task<bool> ReleaseStaleChargeCapAsync(int currentMode, CancellationToken ct);
+
     /// <summary>Read-only diagnostic: dump a raw holding-register range so we can
     /// inspect undocumented tables (e.g. the ToU charge-period schedule).</summary>
     Task<ushort[]> ReadHoldingRawAsync(ushort start, ushort count, CancellationToken ct);

@@ -104,6 +104,32 @@ public class PollServiceTests
     }
 
     [Fact]
+    public async Task PollOnce_ReleasesAStaleChargeCap_WhenInverterIsNotInBackup()
+    {
+        // E.g. after a restart mid-hold, with the mode since changed in the Solinteg app.
+        var inv = new FakeSolintegClient { Stats = Stats(SolintegClient.ModeGeneral), StaleCapPinned = true };
+        var ch = new FakeChargeAmpsClient { Snapshot = Charging(anyCharging: false) };
+        var state = new SystemState();
+
+        await Build(inv, ch, state, automation: false).PollOnce(CancellationToken.None);
+
+        Assert.False(inv.StaleCapPinned);
+        Assert.Contains(state.RecentActions(5), a => a.Message.Contains("max-charge"));
+    }
+
+    [Fact]
+    public async Task PollOnce_KeepsTheChargeCap_WhileStillInBackup()
+    {
+        var inv = new FakeSolintegClient { Stats = Stats(SolintegClient.ModeBackup), StaleCapPinned = true };
+        var ch = new FakeChargeAmpsClient { Snapshot = Charging(anyCharging: true) };
+
+        await Build(inv, ch, new SystemState(), automation: false).PollOnce(CancellationToken.None);
+
+        Assert.True(inv.StaleCapPinned);
+        Assert.Equal(SolintegClient.ModeBackup, inv.StaleCapCheckedWithMode);
+    }
+
+    [Fact]
     public async Task PollOnce_CarChargingOverridesPlan()
     {
         var inv = new FakeSolintegClient { Stats = Stats(SolintegClient.ModeGeneral) };

@@ -35,6 +35,18 @@ internal sealed class FakeSolintegClient : ISolintegClient
         return Task.CompletedTask;
     }
 
+    /// <summary>Set to simulate a ceiling left pinned from an earlier Backup episode.</summary>
+    public bool StaleCapPinned { get; set; }
+    public int? StaleCapCheckedWithMode { get; private set; }
+
+    public Task<bool> ReleaseStaleChargeCapAsync(int currentMode, CancellationToken ct)
+    {
+        StaleCapCheckedWithMode = currentMode;
+        if (!StaleCapPinned || currentMode == SolintegClient.ModeBackup) return Task.FromResult(false);
+        StaleCapPinned = false;
+        return Task.FromResult(true);
+    }
+
     public Task<ushort[]> ReadHoldingRawAsync(ushort start, ushort count, CancellationToken ct) =>
         Task.FromResult(new ushort[count]);
 

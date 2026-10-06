@@ -206,6 +206,13 @@ public class SolintegClient : ISolintegClient
             cap / 10.0, prior / 10.0);
     }
 
+    public async Task<bool> ReleaseStaleChargeCapAsync(int currentMode, CancellationToken ct)
+    {
+        if (_savedMaxChargeSoc is null || currentMode == ModeBackup) return false;
+        await WithConnection(s => RestoreMaxChargeAsync(s, ct), ct);
+        return true;
+    }
+
     private async Task RestoreMaxChargeAsync(NetworkStream s, CancellationToken ct)
     {
         if (_savedMaxChargeSoc is not { } prior) return;   // no cap active
