@@ -16,6 +16,14 @@ In `/volume1/docker/homeenergy`, next to a `data/` folder:
 | `tunnel.env` | from `tunnel.env.example`: the Cloudflare Tunnel token, alone. Never committed. |
 | `update.sh` | pull the newest image and restart (section 3) |
 
+From the PC, `.\deploy.ps1` copies the repo's side of that table (the compose
+file, `update.sh`, the two `.env.example` templates and this doc) to
+`\\10.30.50.5\docker\homeenergy` (`-Target` to change, `-DryRun` to preview).
+It never touches `.env`, `tunnel.env` or `data/`; it reads the first two and
+says so if `update.sh` would refuse to run with them, without printing values.
+It also warns when `main` has commits that are not pushed yet, because the NAS
+runs whatever CI built from the pushed `main`, not what is on the PC.
+
 ## 2. Reach it from the internet: Cloudflare Tunnel
 
 The dashboard can switch the inverter's mode and grid-charge the battery, so on

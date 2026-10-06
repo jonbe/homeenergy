@@ -28,5 +28,6 @@ docker-compose.yml
 README*.md
 docs/
 *.sh
+*.ps1
 *.env.example
 .gitattributes
