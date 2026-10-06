@@ -4,7 +4,7 @@ services:
     container_name: homeenergy
     restart: unless-stopped
     ports:
-      # host:container — reach the dashboard at http://<nas-ip>:5034
+      # host:container — reach the dashboard on the LAN at http://<nas-ip>:5034
       - "5034:8080"
     volumes:
       # Persistent data disk on the NAS; survives image updates.
@@ -16,8 +16,9 @@ services:
       # Inverter address on the local network (override per deployment; the
       # image default in appsettings.json is only a fallback).
       - HomeEnergy__Inverter__Ip=${INVERTER_IP}
-      # Password for the dashboard login screen + control endpoints. Leave the
-      # .env value empty to disable auth (not recommended off localhost).
+      # Password for the dashboard login screen + control endpoints. REQUIRED
+      # when the cloudflared service below is on: it is all that stands between
+      # the internet and the inverter's mode register.
       - HomeEnergy__AuthToken=${APP_AUTH_TOKEN}
       # Secrets — set these on the NAS (Container Manager env, or a .env file
       # next to this compose). Do NOT commit real values.
@@ -26,3 +27,20 @@ services:
       - TIBBER_DATAAPI_CLIENT_SECRET=${TIBBER_DATAAPI_CLIENT_SECRET}
       - CHARGEAMPS_EMAIL=${CHARGEAMPS_EMAIL}
       - CHARGEAMPS_PASSWORD=${CHARGEAMPS_PASSWORD}
+
+  # The Cloudflare Tunnel gives the dashboard a public https address without
+  # opening any router port. It runs as its own container: it connects OUT to
+  # Cloudflare and forwards requests to the app over this project's private
+  # network, so the tunnel's public hostname must point at http://homeenergy:8080
+  # (the service above and the app's port inside it, not the 5034 published on
+  # the NAS). It needs tunnel.env (from tunnel.env.example) next to this file.
+  # The token is in a file of its own so this container never sees .env.
+  # Without a tunnel (LAN only), comment the whole service out. See docs/deploy.md.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: homeenergy-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    env_file: tunnel.env
+    depends_on:
+      - homeenergy

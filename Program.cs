@@ -2,6 +2,7 @@ using HomeEnergy.Configuration;
 using HomeEnergy.Models;
 using HomeEnergy.Services;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -38,11 +39,28 @@ var app = builder.Build();
 
 app.Services.GetRequiredService<IHistoryStore>().Init();
 
+// Behind the Cloudflare tunnel (or any reverse proxy) the connection the app
+// sees is plain http from the proxy; the real scheme and client address arrive
+// in X-Forwarded-* headers. Honour them from any source: the gate needs the
+// scheme to mark the session cookie Secure and the address to throttle login
+// attempts, and the only thing a LAN client can achieve by forging them is to
+// mislabel its own cookie or its own throttle bucket.
+var forwarded = new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
+};
+forwarded.KnownIPNetworks.Clear();
+forwarded.KnownProxies.Clear();
+app.UseForwardedHeaders(forwarded);
+
 // Password gate (see LoginGate). Disabled when no password is configured
 // (local dev); otherwise guards the dashboard and every API/control endpoint.
 var authToken = app.Services.GetRequiredService<IOptions<AppOptions>>().Value.AuthToken;
 if (!string.IsNullOrEmpty(authToken))
 {
+    if (authToken.Length < LoginGate.MinPasswordLength)
+        app.Logger.LogWarning("AuthToken is only {Len} characters; use at least {Min} before exposing the dashboard to the internet",
+            authToken.Length, LoginGate.MinPasswordLength);
     var gate = new LoginGate(authToken,
         app.Services.GetRequiredService<IDataProtectionProvider>(), TimeProvider.System);
     app.Use(gate.InvokeAsync);

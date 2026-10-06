@@ -22,7 +22,11 @@ solar_pr_history.csv
 appsettings.*.local.json
 *.env
 
-# Docs / misc
+# Docs / deploy tooling (NAS side, not part of the image)
 Dockerfile
 docker-compose.yml
 README*.md
+docs/
+*.sh
+*.env.example
+.gitattributes

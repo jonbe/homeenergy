@@ -102,11 +102,12 @@ internal sealed class ThrowingHttpClientFactory : IHttpClientFactory
         throw new InvalidOperationException("HTTP client should not be created on this path");
 }
 
-/// <summary>A clock frozen at a fixed instant, in UTC, so time-of-day logic is deterministic.</summary>
+/// <summary>A clock that only moves when a test moves it (<see cref="Now"/>), in
+/// UTC, so time-of-day logic is deterministic.</summary>
 internal sealed class FixedClock : TimeProvider
 {
-    private readonly DateTimeOffset _now;
-    public FixedClock(DateTimeOffset now) => _now = now;
-    public override DateTimeOffset GetUtcNow() => _now.ToUniversalTime();
+    public DateTimeOffset Now { get; set; }
+    public FixedClock(DateTimeOffset now) => Now = now;
+    public override DateTimeOffset GetUtcNow() => Now.ToUniversalTime();
     public override TimeZoneInfo LocalTimeZone => TimeZoneInfo.Utc;
 }

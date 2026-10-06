@@ -1,0 +1,80 @@
+# Running HomeEnergy on the NAS, and reaching it from the internet
+
+The image is built by GitHub Actions on every push to `main` and published as
+`ghcr.io/jonbe/homeenergy:latest`. The NAS only pulls it. Everything the app
+stores (SQLite history, Tibber tokens, PR calibration, the login master key)
+lives in one folder on the NAS.
+
+## 1. Files on the NAS
+
+In `/volume1/docker/homeenergy`, next to a `data/` folder:
+
+| File | What |
+| --- | --- |
+| `docker-compose.yml` | from this repo |
+| `.env` | from `.env.example`: inverter IP, `APP_AUTH_TOKEN`, Tibber and Charge Amps secrets. Never committed. |
+| `tunnel.env` | from `tunnel.env.example`: the Cloudflare Tunnel token, alone. Never committed. |
+| `update.sh` | pull the newest image and restart (section 3) |
+
+## 2. Reach it from the internet: Cloudflare Tunnel
+
+The dashboard can switch the inverter's mode and grid-charge the battery, so on
+the internet it must sit behind the login screen (`APP_AUTH_TOKEN`). The tunnel
+gives it a public https address with no router port opened and your home IP not
+exposed; Cloudflare terminates https, so the NAS needs no certificate.
+
+1. **Set a long password first.** `APP_AUTH_TOKEN` in `.env`, at least 12
+   characters (`update.sh` refuses to start the tunnel with less). It is entered
+   once per browser; a 30-day encrypted session cookie follows. Wrong guesses
+   are slowed and locked out per address after 10 in 15 minutes.
+2. Cloudflare dashboard → **Zero Trust → Networks → Tunnels → Create a tunnel →
+   Cloudflared**, name it, copy the **token** (the long string after `--token`).
+3. On the NAS, next to `docker-compose.yml`:
+   ```sh
+   cp tunnel.env.example tunnel.env     # paste the bare token after TUNNEL_TOKEN=
+   sudo sh update.sh
+   ```
+   Not the whole install command, no quotes. The token lives in its own file so
+   the tunnel container never sees `.env`. The script checks the tunnel
+   connected and prints cloudflared's own log lines if it did not.
+4. In the tunnel's **Public Hostname** tab add the hostname you want (e.g.
+   `energy.addvt.io`) with service type **HTTP** and URL `homeenergy:8080`:
+   the compose service name and the app's port *inside* the container, not the
+   5034 published on the NAS. Cloudflare adds the DNS record itself; a name
+   that already has one must have it deleted first. Keep the name one level
+   below the domain (`energy.addvt.io`, not `home.energy.addvt.io`) so the free
+   certificate covers it.
+
+**A second gate (recommended).** In Zero Trust create an **Access** application
+for the hostname with a policy that allows only your email (one-time PIN). Then
+Cloudflare asks before a request even reaches the NAS, and the password is the
+second lock rather than the only one. Free for up to 50 users. If you add it,
+exempt `/tibber/callback` (Tibber's OAuth redirect cannot sign in) by giving
+that path a bypass policy, or do the Tibber connect step on the LAN address.
+
+Without a tunnel (LAN only) comment the whole `cloudflared` service out of
+`docker-compose.yml`; `update.sh` then skips every tunnel step.
+
+## 3. Update
+
+```sh
+cd /volume1/docker/homeenergy
+sudo sh update.sh
+```
+
+Pulls the newest image, restarts, checks `/api/status` answers (401 with a
+password set, 200 without) and that the tunnel reconnected. `.env`,
+`tunnel.env` and `data/` are untouched. The dashboard header shows the running
+build's git sha, so you can see the new one landed.
+
+## Troubleshooting
+
+| Symptom | Cause |
+| --- | --- |
+| `update.sh` stops with `tunnel.env is missing` | create it from `tunnel.env.example` (step 3); the app was not stopped |
+| `Unauthorized: Invalid tunnel secret` in the tunnel's log | the token is stale (tunnel recreated, or token refreshed) or copied wrong; copy a fresh one into `tunnel.env` and run `update.sh` again |
+| `Provided Tunnel token is not valid` | `tunnel.env` holds more than the bare token |
+| Tunnel connected but the site shows a Cloudflare error (1033, 502, 530) | the Public Hostname is missing or wrong: it must point at HTTP `homeenergy:8080` |
+| The tunnel never connects | the NAS cannot reach Cloudflare; outbound port 7844 (tcp and udp) must be open |
+| Signed in on the LAN address but asked again on the public one | expected: the cookie is per hostname. Sign in once on each. |
+| `Too many attempts` on the login page | 10 wrong passwords from your address within 15 minutes; wait, or restart the container |

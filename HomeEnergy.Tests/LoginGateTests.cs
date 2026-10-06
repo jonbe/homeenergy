@@ -14,21 +14,25 @@ public class LoginGateTests
     // request is readable by the next.
     private readonly IDataProtectionProvider _keys = new EphemeralDataProtectionProvider();
 
-    private LoginGate Gate(DateTimeOffset? now = null) => new(Password, _keys, new FixedClock(now ?? T0));
+    // No wrong-password delay in tests; the lockout is what's under test, not the sleep.
+    private LoginGate Gate(DateTimeOffset? now = null) => Gate(new FixedClock(now ?? T0));
+    private LoginGate Gate(FixedClock clock) => new(Password, _keys, clock, wrongPasswordDelay: TimeSpan.Zero);
 
-    private static DefaultHttpContext Request(string method, string path, string? accept = "text/html")
+    private static DefaultHttpContext Request(string method, string path, string? accept = "text/html",
+        string ip = "10.0.0.1")
     {
         var ctx = new DefaultHttpContext();
         ctx.Request.Method = method;
         ctx.Request.Path = path;
+        ctx.Connection.RemoteIpAddress = System.Net.IPAddress.Parse(ip);
         if (accept is not null) ctx.Request.Headers.Accept = accept;
         ctx.Response.Body = new MemoryStream();
         return ctx;
     }
 
-    private static DefaultHttpContext LoginPost(string password, string next = "/")
+    private static DefaultHttpContext LoginPost(string password, string next = "/", string ip = "10.0.0.1")
     {
-        var ctx = Request("POST", "/login");
+        var ctx = Request("POST", "/login", ip: ip);
         var body = Encoding.UTF8.GetBytes($"password={Uri.EscapeDataString(password)}&next={Uri.EscapeDataString(next)}");
         ctx.Request.ContentType = "application/x-www-form-urlencoded";
         ctx.Request.Body = new MemoryStream(body);
@@ -159,6 +163,60 @@ public class LoginGateTests
     public async Task TibberCallback_IsExempt()
     {
         Assert.True(await PassesGate(Gate(), Request("GET", "/tibber/callback", accept: null)));
+    }
+
+    [Fact]
+    public async Task TooManyWrongGuesses_LockTheAddressOut_EvenForTheRightPassword()
+    {
+        var gate = Gate();
+        for (int i = 0; i < LoginGate.MaxFailures; i++)
+            await gate.InvokeAsync(LoginPost("nope"), () => Task.CompletedTask);
+
+        var ctx = LoginPost(Password);
+        await gate.InvokeAsync(ctx, () => Task.CompletedTask);
+
+        Assert.Equal(429, ctx.Response.StatusCode);
+        Assert.Null(IssuedCookie(ctx));
+        Assert.Contains("Too many attempts", Body(ctx));
+        Assert.True(int.Parse(ctx.Response.Headers.RetryAfter!) > 0);
+    }
+
+    [Fact]
+    public async Task Lockout_IsPerAddress_AndEndsWithTheWindow()
+    {
+        var clock = new FixedClock(T0);
+        var gate = Gate(clock);
+        for (int i = 0; i < LoginGate.MaxFailures; i++)
+            await gate.InvokeAsync(LoginPost("nope", ip: "10.0.0.1"), () => Task.CompletedTask);
+
+        // Someone else is unaffected.
+        var other = LoginPost(Password, ip: "10.0.0.2");
+        await gate.InvokeAsync(other, () => Task.CompletedTask);
+        Assert.Equal(302, other.Response.StatusCode);
+
+        // The locked address gets back in once the window has passed.
+        clock.Now = T0 + LoginGate.FailureWindow + TimeSpan.FromSeconds(1);
+        var retry = LoginPost(Password, ip: "10.0.0.1");
+        await gate.InvokeAsync(retry, () => Task.CompletedTask);
+        Assert.Equal(302, retry.Response.StatusCode);
+        Assert.NotNull(IssuedCookie(retry));
+    }
+
+    [Fact]
+    public async Task SuccessfulLogin_ClearsEarlierStrikes()
+    {
+        var gate = Gate();
+        for (int i = 0; i < LoginGate.MaxFailures - 1; i++)
+            await gate.InvokeAsync(LoginPost("nope"), () => Task.CompletedTask);
+        await gate.InvokeAsync(LoginPost(Password), () => Task.CompletedTask);
+
+        // Fresh slate: another MaxFailures-1 wrong guesses must not lock out.
+        for (int i = 0; i < LoginGate.MaxFailures - 1; i++)
+            await gate.InvokeAsync(LoginPost("nope"), () => Task.CompletedTask);
+        var ctx = LoginPost(Password);
+        await gate.InvokeAsync(ctx, () => Task.CompletedTask);
+
+        Assert.Equal(302, ctx.Response.StatusCode);
     }
 
     [Fact]

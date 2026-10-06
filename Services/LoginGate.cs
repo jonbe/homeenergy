@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.DataProtection;
@@ -22,19 +23,33 @@ public sealed class LoginGate
     // every outstanding session at once.
     private const string TicketVersion = "1";
 
-    // Wrong guesses wait this long before answering, which caps brute-force rate
-    // without needing any per-client state.
-    private static readonly TimeSpan WrongPasswordDelay = TimeSpan.FromMilliseconds(750);
+    /// <summary>Below this the startup log warns; update.sh refuses to expose it.</summary>
+    public const int MinPasswordLength = 12;
+
+    // Brute-force brake, two layers. Every wrong guess waits before answering,
+    // which slows a single sequential guesser. And each client address gets
+    // MaxFailures wrong guesses per FailureWindow; after that every attempt from
+    // it is refused outright until the window passes, which also stops a
+    // parallel guesser. Addresses are what the proxy reports (X-Forwarded-For).
+    private static readonly TimeSpan DefaultWrongPasswordDelay = TimeSpan.FromMilliseconds(750);
+    public const int MaxFailures = 10;
+    public static readonly TimeSpan FailureWindow = TimeSpan.FromMinutes(15);
+
+    private readonly record struct Strikes(int Count, DateTimeOffset First);
+    private readonly ConcurrentDictionary<string, Strikes> _strikes = new();
 
     private readonly string _password;
     private readonly IDataProtector _protector;
     private readonly TimeProvider _clock;
+    private readonly TimeSpan _wrongPasswordDelay;
 
-    public LoginGate(string password, IDataProtectionProvider protection, TimeProvider clock)
+    public LoginGate(string password, IDataProtectionProvider protection, TimeProvider clock,
+        TimeSpan? wrongPasswordDelay = null)
     {
         _password = password;
         _protector = protection.CreateProtector("HomeEnergy.Session");
         _clock = clock;
+        _wrongPasswordDelay = wrongPasswordDelay ?? DefaultWrongPasswordDelay;
     }
 
     public async Task InvokeAsync(HttpContext ctx, Func<Task> next)
@@ -74,15 +89,27 @@ public sealed class LoginGate
         var form = ctx.Request.HasFormContentType ? await ctx.Request.ReadFormAsync() : null;
         string attempt = form?["password"].ToString() ?? "";
         string next = SafeLocalPath(form?["next"].ToString());
+        string client = ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        var now = _clock.GetUtcNow();
+
+        if (LockedOut(client, now) is { } remaining)
+        {
+            ctx.Response.Headers.RetryAfter = ((int)Math.Ceiling(remaining.TotalSeconds)).ToString();
+            await Reject(ctx, $"Too many attempts — try again in {Math.Ceiling(remaining.TotalMinutes):0} min",
+                next, StatusCodes.Status429TooManyRequests);
+            return;
+        }
 
         if (!Matches(attempt, _password))
         {
-            await Task.Delay(WrongPasswordDelay, ctx.RequestAborted);
+            RecordFailure(client, now);
+            await Task.Delay(_wrongPasswordDelay, ctx.RequestAborted);
             await Reject(ctx, error: "Wrong password", next);
             return;
         }
 
-        var expires = _clock.GetUtcNow() + SessionLifetime;
+        _strikes.TryRemove(client, out _);
+        var expires = now + SessionLifetime;
         var ticket = _protector.Protect($"{TicketVersion}|{expires.ToUnixTimeSeconds()}");
         ctx.Response.Cookies.Append(CookieName, ticket, new CookieOptions
         {
@@ -93,6 +120,30 @@ public sealed class LoginGate
             Path = "/",
         });
         ctx.Response.Redirect(next);
+    }
+
+    // Time left on this client's lockout, or null if it may try.
+    private TimeSpan? LockedOut(string client, DateTimeOffset now)
+    {
+        if (!_strikes.TryGetValue(client, out var s)) return null;
+        var until = s.First + FailureWindow;
+        if (until <= now)
+        {
+            _strikes.TryRemove(client, out _);   // window over, clean slate
+            return null;
+        }
+        return s.Count >= MaxFailures ? until - now : null;
+    }
+
+    private void RecordFailure(string client, DateTimeOffset now)
+    {
+        _strikes.AddOrUpdate(client, _ => new Strikes(1, now),
+            (_, s) => s.First + FailureWindow <= now ? new Strikes(1, now) : s with { Count = s.Count + 1 });
+
+        // Keep the table from growing with one-off visitors: drop expired entries.
+        if (_strikes.Count > 1000)
+            foreach (var (key, s) in _strikes)
+                if (s.First + FailureWindow <= now) _strikes.TryRemove(key, out _);
     }
 
     private bool HeaderMatches(HttpContext ctx) =>
@@ -120,9 +171,10 @@ public sealed class LoginGate
         candidate is { Length: > 0 } p && p[0] == '/' && (p.Length == 1 || (p[1] != '/' && p[1] != '\\'))
             ? p : "/";
 
-    private static async Task Reject(HttpContext ctx, string? error, string? next = null)
+    private static async Task Reject(HttpContext ctx, string? error, string? next = null,
+        int status = StatusCodes.Status401Unauthorized)
     {
-        ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        ctx.Response.StatusCode = status;
         var wantsHtml = ctx.Request.Headers.Accept.ToString().Contains("text/html");
         if (!wantsHtml || ctx.Request.Path.StartsWithSegments("/api"))
         {
