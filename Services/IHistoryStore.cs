@@ -19,4 +19,10 @@ public interface IHistoryStore
     /// minute samples (each ~1 sample/min, so W/60000 = kWh for that minute).
     /// More accurate than the hourly rollup, which nets import against export.</summary>
     ExportTotals TodayExport();
+
+    /// <summary>Typical house load (kW) for each hour of the day, 0–23, learned
+    /// from the last <paramref name="days"/> days of hourly history: the median
+    /// of that hour's averages, so a day the car charged does not drag it up.
+    /// Null for an hour with too few samples to trust.</summary>
+    IReadOnlyList<double?> LoadProfileKw(int days);
 }

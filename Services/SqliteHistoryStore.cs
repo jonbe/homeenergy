@@ -140,6 +140,34 @@ public class SqliteHistoryStore : IHistoryStore
         static double? Num(SqliteDataReader r, int i) => r.IsDBNull(i) ? null : r.GetDouble(i);
     }
 
+    // Fewer samples than this for an hour and we'd rather use the config estimate.
+    private const int MinProfileSamples = 3;
+
+    public IReadOnlyList<double?> LoadProfileKw(int days)
+    {
+        var byHour = new List<double>[24];
+        for (int h = 0; h < 24; h++) byHour[h] = new List<double>();
+        try
+        {
+            using var conn = Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT ts, load_w FROM stats_hour WHERE ts >= :cutoff AND load_w IS NOT NULL;";
+            cmd.Parameters.AddWithValue(":cutoff", DateTimeOffset.Now.AddDays(-days).ToString("yyyy-MM-ddTHH:00:00"));
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+                byHour[int.Parse(r.GetString(0).Substring(11, 2))].Add(r.GetDouble(1) / 1000.0);
+        }
+        catch (Exception ex) { _log.LogWarning(ex, "load profile read failed"); }
+
+        return byHour.Select(samples =>
+        {
+            if (samples.Count < MinProfileSamples) return (double?)null;
+            samples.Sort();
+            int mid = samples.Count / 2;
+            return samples.Count % 2 == 1 ? samples[mid] : (samples[mid - 1] + samples[mid]) / 2;
+        }).ToList();
+    }
+
     public ExportTotals TodayExport()
     {
         try

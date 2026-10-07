@@ -92,6 +92,10 @@ internal sealed class FakeHistoryStore : IHistoryStore
     public IReadOnlyList<HistoryHour> TodayHourly() => Array.Empty<HistoryHour>();
     public IReadOnlyList<HistoryHour> HourlyForDate(DateOnly date) => Array.Empty<HistoryHour>();
     public ExportTotals TodayExport() => new(0, 0);
+
+    /// <summary>Per-hour load the fake "learned"; all null = no history yet.</summary>
+    public double?[] Profile { get; } = new double?[24];
+    public IReadOnlyList<double?> LoadProfileKw(int days) => Profile;
 }
 
 /// <summary>Fails if a client is ever created — proves a code path short-circuits

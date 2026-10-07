@@ -11,8 +11,10 @@ public class PlanServiceTests
     private static readonly DateTimeOffset Midnight = new(2026, 10, 6, 0, 0, 0, TimeSpan.Zero);
     private static readonly DateTimeOffset JustAfterMidnight = Midnight.AddMinutes(10);
 
-    // 19.2 kWh pack with 15 kWh usable (the production defaults); 1 kW house load.
-    private static PlanService Planner(DateTimeOffset now, double maxGridChargeKw = 5) =>
+    // 19.2 kWh pack with 15 kWh usable (the production defaults); 1 kW house load
+    // from config, no learned history unless a store is given.
+    private static PlanService Planner(DateTimeOffset now, double maxGridChargeKw = 5,
+        FakeHistoryStore? history = null) =>
         new(Options.Create(new AppOptions
         {
             Battery = new BatteryOptions { CapacityKwh = 19.2, UsableKwh = 15 },
@@ -21,7 +23,7 @@ public class PlanServiceTests
                 SummerLoadKwhPerHour = 1.0, WinterLoadKwhPerHour = 1.0,
                 MinArbitrageGapPct = 15, MaxGridChargeKw = maxGridChargeKw, ExportPriceFactor = 0.6,
             },
-        }), new FixedClock(now));
+        }), new FixedClock(now), history ?? new FakeHistoryStore());
 
     private static InverterStats Inverter(double soc) => new(
         PvPowerW: 0, Pv1PowerW: 0, Pv2PowerW: 0, InverterAcW: 0, GridPowerW: 0,
@@ -95,6 +97,22 @@ public class PlanServiceTests
         Assert.True(SlotAt(plan, 8, 0).BatteryKwh <= -0.25, "the whole quarter should come from the battery");
         Assert.All(plan.Today.Where(s => s.Action != "past" && s.Start.Hour < 8),
             s => Assert.Equal("hold", s.Action));
+    }
+
+    [Fact]
+    public void LearnedLoadProfile_OverridesTheConfigEstimate_WhereItHasData()
+    {
+        // History says the house draws 3 kW at 03:00 but has nothing for 05:00;
+        // config says 1 kW. Flat prices, so the battery just serves the load.
+        var history = new FakeHistoryStore();
+        history.Profile[3] = 3.0;
+
+        var plan = Planner(JustAfterMidnight, history: history)
+            .Build(PricesFor((_, _) => 1.0), Solar(_ => 0), Inverter(soc: 90))!;
+
+        // Stored energy drawn = delivered / leg efficiency (0.93), on a 0.05 kWh grid.
+        Assert.InRange(SlotAt(plan, 3).BatteryKwh, -0.85, -0.75);   // 3 kW × ¼ h from history
+        Assert.InRange(SlotAt(plan, 5).BatteryKwh, -0.30, -0.25);   // 1 kW × ¼ h from config
     }
 
     [Fact]

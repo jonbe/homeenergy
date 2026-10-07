@@ -24,12 +24,21 @@ public class PlanService : IPlanService
     private readonly BatteryOptions _bat;
     private readonly StrategyOptions _strat;
     private readonly TimeProvider _clock;
+    private readonly IHistoryStore _history;
 
-    public PlanService(IOptions<AppOptions> opt, TimeProvider clock)
+    // The house load profile is learned from this many days of history and
+    // re-read this often (Build runs every minute; the profile barely moves).
+    private const int ProfileDays = 14;
+    private static readonly TimeSpan ProfileRefresh = TimeSpan.FromMinutes(15);
+    private IReadOnlyList<double?>? _profile;
+    private DateTimeOffset _profileAt;
+
+    public PlanService(IOptions<AppOptions> opt, TimeProvider clock, IHistoryStore history)
     {
         _bat = opt.Value.Battery;
         _strat = opt.Value.Strategy;
         _clock = clock;
+        _history = history;
     }
 
     public PlanSnapshot? Build(PriceSnapshot? prices, SolarSnapshot? solar, InverterStats? inverter)
@@ -57,6 +66,7 @@ public class PlanService : IPlanService
 
         // Every slot of the planning days, in time order.
         var days = haveTomorrow ? new[] { today, today.AddDays(1) } : new[] { today };
+        var profile = LoadProfile(now);
         var timeline = new List<(DateTimeOffset Start, DispatchSlot Slot, bool Priced)>();
         foreach (var day in days)
         {
@@ -68,7 +78,7 @@ public class PlanService : IPlanService
                 timeline.Add((start, new DispatchSlot(
                     PriceAt(points, start) ?? 0,
                     pv.FirstOrDefault(h => h.Hour == local.Hour)?.EstKw ?? 0,
-                    LoadKw(local.Month)), pricedDays.Contains(day)));
+                    LoadKw(profile, local)), pricedDays.Contains(day)));
             }
         }
 
@@ -114,10 +124,24 @@ public class PlanService : IPlanService
             todaySlots, GridChargeKwh(tomorrowSlots), tomorrowSlots, now);
     }
 
-    // Summer (Apr–Sep) draws little; winter far more. A rough per-hour average is
-    // enough to size how much the battery has to carry.
-    private double LoadKw(int month) =>
-        month is >= 4 and <= 9 ? _strat.SummerLoadKwhPerHour : _strat.WinterLoadKwhPerHour;
+    // House load for a slot: what this hour of the day has typically drawn over
+    // the last two weeks, which captures the shape of the day (low at night,
+    // peaks morning and evening) that decides how much battery to hold back.
+    // Until there is enough history, the rough seasonal estimate from config
+    // (summer Apr–Sep low, winter far higher) stands in.
+    private double LoadKw(IReadOnlyList<double?> profile, DateTime local) =>
+        profile[local.Hour]
+        ?? (local.Month is >= 4 and <= 9 ? _strat.SummerLoadKwhPerHour : _strat.WinterLoadKwhPerHour);
+
+    private IReadOnlyList<double?> LoadProfile(DateTimeOffset now)
+    {
+        if (_profile is null || now - _profileAt > ProfileRefresh)
+        {
+            _profile = _history.LoadProfileKw(ProfileDays);
+            _profileAt = now;
+        }
+        return _profile;
+    }
 
     // The battery behaviour the inverter is currently running, so that leaving it
     // counts as a mode switch in the optimizer.
