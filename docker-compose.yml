@@ -1,6 +1,8 @@
 services:
   homeenergy:
-    image: ghcr.io/jonbe/homeenergy:latest
+    # Normally the image CI published. update.sh sets HOMEENERGY_IMAGE to the
+    # PC-built homeenergy:dev when it finds homeenergy-image.tar (deploy.ps1 -Image).
+    image: ${HOMEENERGY_IMAGE:-ghcr.io/jonbe/homeenergy:latest}
     container_name: homeenergy
     restart: unless-stopped
     ports:

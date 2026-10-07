@@ -79,6 +79,24 @@ password set, 200 without) and that the tunnel reconnected. `.env`,
 `tunnel.env` and `data/` are untouched. The dashboard header shows the running
 build's git sha, so you can see the new one landed.
 
+## 4. Trying a change without CI
+
+```
+.\deploy.ps1 -Image
+```
+
+builds the image on the PC (Docker Desktop must be running), saves it as
+`homeenergy-image.tar` next to the compose file on the NAS, and `sudo sh
+update.sh` there loads and runs it instead of pulling from GHCR. Nothing needs
+to be pushed. The dashboard header shows the build as `<sha>-dev` so it is
+obvious a local image is running. The image is amd64, which is what the NAS
+is; it is about 250 MB over SMB.
+
+To go back to the CI image: push, wait for the action, then a plain
+`.\deploy.ps1` (which also deletes a leftover tar on the NAS) and `sudo sh
+update.sh`. Container Manager restarts keep whatever image the container was
+created with; only `update.sh` switches.
+
 ## Troubleshooting
 
 | Symptom | Cause |

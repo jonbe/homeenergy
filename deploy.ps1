@@ -19,13 +19,23 @@
     password, the API secrets, the tunnel token and the history database, and
     belong to that machine.
 
+    -Image builds the Docker image on THIS PC and sends it as
+    homeenergy-image.tar; update.sh on the NAS then loads and runs that instead
+    of pulling from GHCR. For trying a change without waiting for CI (or
+    pushing at all). The dashboard header shows it as <sha>-dev. A deploy
+    WITHOUT -Image removes a leftover homeenergy-image.tar from the NAS, so a
+    stale local build can never be loaded over newer code; the next plain
+    update.sh on the NAS returns to the GHCR image.
+
 .EXAMPLE
     .\deploy.ps1 -DryRun
     .\deploy.ps1
+    .\deploy.ps1 -Image           # build here, send the image, skip CI
 #>
 param(
     [string]$Target = '\\10.30.50.5\docker\homeenergy',
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$Image
 )
 
 $ErrorActionPreference = 'Stop'
@@ -68,9 +78,9 @@ try {
     if ($dirty) { Write-Warning "Working tree has uncommitted changes - deploying the committed files anyway." }
     git -C $root fetch --quiet origin main 2>$null
     $ahead = [int](git -C $root rev-list --count origin/main..HEAD 2>$null)
-    if ($ahead -gt 0) {
+    if ($ahead -gt 0 -and -not $Image) {
         Write-Warning "main is $ahead commit(s) ahead of origin/main. The NAS will keep running the LAST PUSHED build;"
-        Write-Warning "push first (git push) and wait for the 'Publish container' action, or update.sh pulls old code."
+        Write-Warning "push first (git push) and wait for the 'Publish container' action, or use -Image to send a local build."
     }
 } catch { }
 
@@ -104,6 +114,49 @@ foreach ($f in $files) {
     Write-Host ("  >{0}" -f $f) -ForegroundColor Green
     if (-not $DryRun) { Copy-Item $src $dst -Force }
     $sent++
+}
+
+# ---------------------------------------------------------------- prebuilt image
+$imageOnNas = Join-Path $Target 'homeenergy-image.tar'
+if ($Image) {
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        Write-Host '-Image needs Docker on this PC (Docker Desktop), and "docker" was not found.' -ForegroundColor Red
+        exit 1
+    }
+    docker info 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host '-Image needs the Docker engine running on this PC; start Docker Desktop and run again.' -ForegroundColor Red
+        exit 1
+    }
+    # Identify the build in the dashboard header, as CI does, so it is obvious
+    # a local image is running and which commit it came from.
+    $sha  = (git -C $root rev-parse --short HEAD 2>$null) + '-dev'
+    $time = (Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz')
+    if ($DryRun) {
+        Write-Host "  (would build homeenergy:dev here as $sha and send it as homeenergy-image.tar)" -ForegroundColor DarkGray
+    } else {
+        Write-Host "  building homeenergy:dev ($sha) on this PC ..." -ForegroundColor Green
+        docker build --platform linux/amd64 -t homeenergy:dev --build-arg "BUILD_SHA=$sha" --build-arg "BUILD_TIME=$time" $root
+        if ($LASTEXITCODE -ne 0) { Write-Host 'docker build failed' -ForegroundColor Red; exit 1 }
+
+        # saved locally first: writing a big file straight onto an SMB share is slower and
+        # can leave a half-written file behind if it is interrupted
+        $tmp = Join-Path ([IO.Path]::GetTempPath()) 'homeenergy-image.tar'
+        docker save homeenergy:dev -o $tmp
+        if ($LASTEXITCODE -ne 0) { Write-Host 'docker save failed' -ForegroundColor Red; exit 1 }
+        $mb = [math]::Round((Get-Item $tmp).Length / 1MB)
+        Write-Host "  sending homeenergy-image.tar ($mb MB) ..." -ForegroundColor Green
+        Copy-Item $tmp $imageOnNas -Force
+        Remove-Item $tmp -Force
+        $sent++
+    }
+} elseif (Test-Path $imageOnNas) {
+    # this deploy runs the CI image; an old local build lying there would be loaded over it
+    if ($DryRun) { Write-Host '  (would remove a leftover homeenergy-image.tar from the NAS)' -ForegroundColor DarkGray }
+    else {
+        Remove-Item $imageOnNas -Force
+        Write-Host '  removed a leftover homeenergy-image.tar from the NAS (this deploy uses the GHCR image).' -ForegroundColor DarkGray
+    }
 }
 
 # ---------------------------------------------------------------- the NAS-only files
@@ -171,7 +224,7 @@ Write-Host "Then on the NAS:" -ForegroundColor Cyan
 Write-Host "    cd /volume1/docker/homeenergy"
 Write-Host "    sudo sh update.sh" -ForegroundColor White
 Write-Host ""
-Write-Host "  (pulls the newest GHCR image, restarts, checks the app answers and the tunnel connected)" -ForegroundColor DarkGray
+Write-Host "  ($(if ($Image) {'loads the PC-built image'} else {'pulls the newest GHCR image'}), restarts, checks the app answers and the tunnel connected)" -ForegroundColor DarkGray
 Write-Host "  (SMB does not carry the executable bit, hence 'sh update.sh')" -ForegroundColor DarkGray
 Write-Host ""
 

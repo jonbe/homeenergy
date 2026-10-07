@@ -6,8 +6,10 @@
 #
 # The image is built by GitHub Actions on every push to main and published to
 # GHCR, so this only pulls the newest one and restarts; nothing is built here.
-# One command, so sudo asks once. (`sh update.sh` because the SMB share does
-# not carry the executable bit.)
+# Except: if deploy.ps1 -Image left homeenergy-image.tar next to this file, that
+# PC-built image is loaded and run instead (for trying a change without waiting
+# for CI); the next plain run goes back to GHCR. One command, so sudo asks
+# once. (`sh update.sh` because the SMB share does not carry the executable bit.)
 set -e
 
 cd "$(dirname "$0")"
@@ -41,8 +43,17 @@ if [ "$TUNNEL" = "yes" ]; then
   fi
 fi
 
-echo "==> pulling"
-$DC pull
+IMAGE_TAR=homeenergy-image.tar
+if [ -f "$IMAGE_TAR" ]; then
+  echo "==> loading $IMAGE_TAR (built on the PC; the registry is not consulted)"
+  docker load -i "$IMAGE_TAR"
+  rm -f "$IMAGE_TAR"
+  export HOMEENERGY_IMAGE=homeenergy:dev
+  if [ "$TUNNEL" = "yes" ]; then $DC pull cloudflared; fi
+else
+  echo "==> pulling"
+  $DC pull
+fi
 
 echo "==> starting"
 $DC up -d
@@ -62,6 +73,9 @@ case "$code" in
   *)   echo "==> the app did not come up; $DC logs --tail=40 homeenergy"; exit 1 ;;
 esac
 echo "==> up on port ${PORT}"
+if [ -n "$HOMEENERGY_IMAGE" ]; then
+  echo "    running the PC-built image ($HOMEENERGY_IMAGE); the next plain 'sh update.sh' returns to GHCR"
+fi
 
 # The Cloudflare tunnel is connected once cloudflared logs a registered connection. A wrong or
 # revoked token, or no route out to Cloudflare, never gets there.
