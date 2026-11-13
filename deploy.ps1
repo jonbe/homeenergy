@@ -176,6 +176,9 @@ if (Test-Path $envPath) {
     if ($envText -notmatch '(?m)^INVERTER_IP=\S+') {
         $notes += 'INVERTER_IP is not set in .env: the image default (appsettings.json) is used'
     }
+    if ($envText -notmatch '(?m)^SOLAR_LATITUDE=\S+' -or $envText -notmatch '(?m)^SOLAR_LONGITUDE=\S+') {
+        $notes += 'SOLAR_LATITUDE / SOLAR_LONGITUDE are not set in .env: the forecast uses the image default, a rounded place about 6 km wide'
+    }
     $pw = if ($envText -match '(?m)^APP_AUTH_TOKEN=(.*)$') { $Matches[1].Trim() } else { '' }
     if ($pw.Length -eq 0) {
         if ($tunnelOn) { $errors += 'APP_AUTH_TOKEN is empty in .env and the tunnel is on: the whole internet could change the inverter. update.sh refuses this.' }

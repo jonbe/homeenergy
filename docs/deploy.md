@@ -12,7 +12,7 @@ In `/volume1/docker/homeenergy`, next to a `data/` folder:
 | File | What |
 | --- | --- |
 | `docker-compose.yml` | from this repo |
-| `.env` | from `.env.example`: inverter IP, `APP_AUTH_TOKEN`, Tibber and Charge Amps secrets. Never committed. |
+| `.env` | from `.env.example`: inverter IP, the exact solar location (`SOLAR_LATITUDE`, `SOLAR_LONGITUDE`; the image only knows a rounded place), `APP_AUTH_TOKEN`, Tibber and Charge Amps secrets. Never committed. |
 | `tunnel.env` | from `tunnel.env.example`: the Cloudflare Tunnel token, alone. Never committed. |
 | `update.sh` | pull the newest image and restart (section 3) |
 

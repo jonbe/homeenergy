@@ -18,6 +18,11 @@ services:
       # Inverter address on the local network (override per deployment; the
       # image default in appsettings.json is only a fallback).
       - HomeEnergy__Inverter__Ip=${INVERTER_IP}
+      # Where the panels are, for the solar forecast. The image default in
+      # appsettings.json is a place about 6 km wide on purpose (this repository is
+      # public): put the exact latitude and longitude in .env, never in the repo.
+      - HomeEnergy__Solar__Latitude=${SOLAR_LATITUDE:-57.8}
+      - HomeEnergy__Solar__Longitude=${SOLAR_LONGITUDE:-14.2}
       # Password for the dashboard login screen + control endpoints. REQUIRED
       # when the cloudflared service below is on: it is all that stands between
       # the internet and the inverter's mode register.
